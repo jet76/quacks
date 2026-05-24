@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quacks"
+version = "0.1.0"
+description = "Quacks of Quedlinburg simulation engine"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-cov"]
+analysis = ["pandas", "matplotlib", "numpy"]
+
+[project.scripts]
+quacks = "quacks.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["quacks*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
