@@ -13,6 +13,8 @@ from quacks.strategies.threshold import ThresholdStrategy
 from quacks.strategies.greedy import GreedyBuyerStrategy
 from quacks.strategies.cautious import CautiousStrategy
 from quacks.strategies.aggressive import AggressiveStrategy
+from quacks.strategies.ev_optimal import EVOptimalStrategy
+from quacks.strategies.monte_carlo import MonteCarloStrategy
 
 __all__ = [
     "PlayerStrategy",
@@ -20,4 +22,6 @@ __all__ = [
     "GreedyBuyerStrategy",
     "CautiousStrategy",
     "AggressiveStrategy",
+    "EVOptimalStrategy",
+    "MonteCarloStrategy",
 ]

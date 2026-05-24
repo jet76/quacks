@@ -101,7 +101,7 @@ class StatsCollector:
                     player_name=player.name,
                     strategy=player.strategy.name,
                     cauldron_position=rec.cauldron_position,
-                    white_sum=player.cauldron.white_sum,
+                    white_sum=rec.white_sum,
                     exploded=rec.exploded,
                     explosion_choice=rec.explosion_choice,
                     vp_scored=rec.vp_scored,

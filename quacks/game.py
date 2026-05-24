@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from quacks.chips import Chip, ROUND_6_WHITE_ADDITION
-from quacks.enums import ChipColor, GamePhase, FortuneCardType, ExplosionChoice, BonusDieFace
-from quacks.fortune_teller import FortuneCard, FortuneEffect, make_shuffled_deck
+from quacks.enums import ChipColor, GamePhase, ExplosionChoice, BonusDieFace
+from quacks.fortune_teller import FortuneCard, FortuneEffect, make_game_deck
 from quacks.market import Market
 from quacks.player import Player
 from quacks.scoring import cauldron_reward, SCORING_TRACK_MAX, rubies_to_vp
@@ -38,6 +38,11 @@ class GameState:
     current_fortune_card: Optional[FortuneCard]
     total_rounds: int = TOTAL_ROUNDS
 
+    # Round-long effect flags visible to strategies
+    flask_disabled: bool = False
+    strong_ingredient_bonus: int = 0
+    extra_ruby_on_landing: bool = False
+
     @property
     def leader_score(self) -> int:
         return max(p.scoring_position for p in self.players)
@@ -53,6 +58,9 @@ class GameState:
 
     def is_last_round(self) -> bool:
         return self.round_number == self.total_rounds
+
+    def rounds_remaining(self) -> int:
+        return self.total_rounds - self.round_number
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +85,7 @@ def roll_bonus_die(rng: random.Random | None = None) -> BonusDieFace:
 # Event type
 # ---------------------------------------------------------------------------
 
-Event = dict  # simple dict-based event system; keys: "type", "player", "data"
+Event = dict
 EventHandler = Callable[[Event], None]
 
 
@@ -90,12 +98,7 @@ def _event(event_type: str, player: Optional[Player] = None, **data) -> Event:
 # ---------------------------------------------------------------------------
 
 class Game:
-    """Full simulation of one complete game of Quacks of Quedlinburg.
-
-    Usage:
-        game = Game(players=[...], n_players=4)
-        result = game.run()
-    """
+    """Full simulation of one complete game of Quacks of Quedlinburg."""
 
     def __init__(
         self,
@@ -115,17 +118,22 @@ class Game:
             player.bag._rng = self.rng
 
         self.market = Market(n_players=len(players), book_pages=book_pages)
-        self.fortune_deck: list[FortuneCard] = make_shuffled_deck(self.rng)
+        # 24-card deck; top 9 are drawn for this game
+        self.fortune_deck: list[FortuneCard] = make_game_deck(self.rng)
         self.round_number: int = 0
         self.phase: GamePhase = GamePhase.SETUP
         self._current_card: Optional[FortuneCard] = None
 
-        # Round-long modifiers set by Fortune Teller cards
+        # Round-long modifiers (reset each round)
         self._rat_multiplier: int = 1
         self._vp_multiplier: int = 1
         self._stop_bonus_vp: int = 0
         self._explode_ruby_bonus: int = 0
         self._flask_free_refill: bool = False
+        self._flask_disabled: bool = False
+        self._strong_ingredient_bonus: int = 0
+        self._extra_ruby_on_landing: bool = False
+        self._bonus_coins: int = 0
 
     # ------------------------------------------------------------------
     # Event system
@@ -143,13 +151,10 @@ class Game:
     # ------------------------------------------------------------------
 
     def run(self) -> "GameResult":
-        """Run the complete 9-round game and return the result."""
         self._emit(_event("game_start", players=[p.name for p in self.players]))
-
         for rnd in range(1, TOTAL_ROUNDS + 1):
             self.round_number = rnd
             self._run_round(rnd)
-
         return self._compute_result()
 
     def _game_state(self) -> GameState:
@@ -159,6 +164,9 @@ class Game:
             players=self.players,
             market=self.market,
             current_fortune_card=self._current_card,
+            flask_disabled=self._flask_disabled,
+            strong_ingredient_bonus=self._strong_ingredient_bonus,
+            extra_ruby_on_landing=self._extra_ruby_on_landing,
         )
 
     # ------------------------------------------------------------------
@@ -175,27 +183,58 @@ class Game:
         self._current_card = card
         self._reset_round_modifiers()
         self._apply_fortune_card_pre(card, state)
-        self._emit(_event("fortune_card", card_id=card.card_id, name=card.name, effect=card.effect.name))
+        self._emit(_event("fortune_card", card_id=card.card_id, name=card.name,
+                          effect=card.effect.name))
 
         # --- Begin player rounds ---
         rat_advances = self._compute_rat_advances()
         for player in self.players:
             player.begin_round(rnd, card.card_id, rat_advances.get(player.name, 0))
 
-        # Fortune card: flask free refill
+        # Apply flask free refill
         if self._flask_free_refill:
             for p in self.players:
                 p.flask_full = True
 
-        # Fortune card: extra mandatory draw before pulling (card 9)
-        if card.effect == FortuneEffect.EXTRA_DRAW_BEFORE:
-            for player in self.players:
-                self._mandatory_extra_draw(player, state, safe=False)
+        # Apply immediate bonus ruby (e.g. Lucky Charm card)
+        if card.effect == FortuneEffect.BONUS_RUBY:
+            for p in self.players:
+                p.rubies += card.magnitude
+                if p._current_record:
+                    p._current_record.rubies_earned += card.magnitude
+            self._emit(_event("fortune_bonus_ruby", magnitude=card.magnitude))
 
-        # Fortune card: free draw before pulling (card 3)
-        if card.effect == FortuneEffect.FREE_CHIP_DRAW:
+        # Apply free chip from supply
+        if card.effect == FortuneEffect.FREE_CHIP_FROM_SUPPLY:
+            state = self._game_state()
+            self._apply_free_chip_from_supply(state)
+
+        # Apply winner gets free chip
+        if card.effect == FortuneEffect.WINNER_FREE_CHIP:
+            state = self._game_state()
+            self._apply_winner_free_chip(state)
+
+        # Apply free upgrade
+        if card.effect == FortuneEffect.FREE_UPGRADE:
+            state = self._game_state()
+            self._apply_free_upgrades(state)
+
+        # Apply catch-up coins
+        if card.effect == FortuneEffect.CATCHUP_COINS:
+            leader = max(p.scoring_position for p in self.players)
+            for p in self.players:
+                bonus = max(0, (leader - p.scoring_position) // 2)
+                if bonus:
+                    p.coins += bonus
+                    self._emit(_event("catchup_coins", player=p, bonus=bonus))
+
+        # Extra draw cards handled before pulling
+        if card.effect == FortuneEffect.FREE_CHIP_DRAW_SAFE:
             for player in self.players:
-                self._mandatory_extra_draw(player, state, safe=True)
+                self._mandatory_extra_draw(player, self._game_state(), safe=True)
+        elif card.effect == FortuneEffect.FREE_CHIP_DRAW_UNSAFE:
+            for player in self.players:
+                self._mandatory_extra_draw(player, self._game_state(), safe=False)
 
         # --- Pulling phase ---
         self.phase = GamePhase.PULLING
@@ -212,10 +251,6 @@ class Game:
         self.phase = GamePhase.EVALUATION_B
         state = self._game_state()
         self._run_evaluation_b(state)
-
-        # --- Evaluation C: rat stones ---
-        self.phase = GamePhase.EVALUATION_C
-        # (Rat advances are computed for NEXT round, not applied here)
 
         # --- Evaluation D: buying ---
         self.phase = GamePhase.EVALUATION_D
@@ -251,15 +286,18 @@ class Game:
         self._stop_bonus_vp = 0
         self._explode_ruby_bonus = 0
         self._flask_free_refill = False
+        self._flask_disabled = False
+        self._strong_ingredient_bonus = 0
+        self._extra_ruby_on_landing = False
+        self._bonus_coins = 0
 
     def _apply_fortune_card_pre(self, card: FortuneCard, state: GameState) -> None:
-        """Apply pre-round fortune effects."""
         match card.effect:
             case FortuneEffect.DROPLET_ADVANCE:
                 for player in self.players:
                     player.cauldron.advance_droplet(card.magnitude)
                     self._emit(_event("droplet_advanced", player=player, amount=card.magnitude))
-            case FortuneEffect.RAT_DOUBLE:
+            case FortuneEffect.RAT_MULTIPLIER:
                 self._rat_multiplier = card.magnitude
             case FortuneEffect.STOP_BONUS_VP:
                 self._stop_bonus_vp = card.magnitude
@@ -267,15 +305,20 @@ class Game:
                 self._explode_ruby_bonus = card.magnitude
             case FortuneEffect.FLASK_FREE_REFILL:
                 self._flask_free_refill = True
-            case FortuneEffect.VP_DOUBLED:
+            case FortuneEffect.VP_MULTIPLIER:
                 self._vp_multiplier = card.magnitude
-            case FortuneEffect.FREE_CHIP_FROM_SUPPLY:
-                self._apply_free_chip_from_supply(state)
+            case FortuneEffect.BONUS_COIN:
+                self._bonus_coins = card.magnitude
+            case FortuneEffect.NO_FLASK:
+                self._flask_disabled = True
+            case FortuneEffect.STRONG_INGREDIENT:
+                self._strong_ingredient_bonus = card.magnitude
+            case FortuneEffect.EXTRA_DROPLET_RUBY:
+                self._extra_ruby_on_landing = True
             case _:
-                pass  # EXTRA_DRAW_BEFORE and FREE_CHIP_DRAW handled separately
+                pass  # handled directly in _run_round
 
     def _apply_free_chip_from_supply(self, state: GameState) -> None:
-        """Fortune card 6: each player gets one free chip from market."""
         available = state.market.available_chips(self.round_number)
         for player in self.players:
             chosen = player.strategy.choose_free_chip(
@@ -290,20 +333,56 @@ class Game:
                         player._current_record.free_fortune_chip = chosen
                     self._emit(_event("free_chip_taken", player=player, chip=str(chosen)))
 
+    def _apply_winner_free_chip(self, state: GameState) -> None:
+        """Leader gets one free chip from supply."""
+        leader = max(self.players, key=lambda p: p.scoring_position)
+        available = state.market.available_chips(self.round_number)
+        chosen = leader.strategy.choose_free_chip(
+            leader, state, [l.chip for l in available if l.stock > 0]
+        )
+        if chosen:
+            key = (chosen.color, chosen.value)
+            if state.market._stock.get(key, 0) > 0:
+                state.market._stock[key] -= 1
+                leader.bag.add(chosen)
+                self._emit(_event("winner_free_chip", player=leader, chip=str(chosen)))
+
+    def _apply_free_upgrades(self, state: GameState) -> None:
+        """Each player may upgrade one 1-chip to a 2-chip (same color) for free."""
+        for player in self.players:
+            bag_chips = player.bag.all_chips()
+            options = []
+            for chip in set(bag_chips):
+                if chip.color != ChipColor.WHITE and chip.value == 1:
+                    target = Chip(chip.color, 2)
+                    if state.market.in_stock(target):
+                        options.append((chip, target))
+            if options:
+                chosen = player.strategy.choose_purple_upgrade(player, state, options)
+                if chosen:
+                    from_chip, to_chip = chosen
+                    player.bag.draw_specific(from_chip)
+                    state.market.restock(from_chip)
+                    state.market._stock[(to_chip.color, to_chip.value)] -= 1
+                    player.bag.add(to_chip)
+                    self._emit(_event("free_upgrade", player=player,
+                                      upgrade=f"{from_chip} → {to_chip}"))
+
     def _mandatory_extra_draw(self, player: Player, state: GameState, safe: bool) -> None:
-        """Draw one chip before pulling starts (fortune card 3 = safe, 9 = unsafe)."""
         if player.bag.is_empty:
             return
         chip = player.draw_chip()
         if safe:
-            # Safe draw: does not count toward explosion
-            pos, _ = player.cauldron.place(chip)
+            pos, rubies = player.cauldron.place(chip)
             if chip.color == ChipColor.WHITE:
-                player.cauldron._white_sum -= chip.value  # undo white sum addition
+                player.cauldron._white_sum -= chip.value  # safe draw: undo explosion risk
+            if rubies:
+                player.rubies += len(rubies)
+                if player._current_record:
+                    player._current_record.rubies_earned += len(rubies)
             self._emit(_event("safe_extra_draw", player=player, chip=str(chip)))
         else:
-            pos, rubies = player.cauldron.place(chip)
-            player.rubies += len(rubies)
+            pos, rubies = player.place_chip(chip)
             self._emit(_event("mandatory_draw", player=player, chip=str(chip), pos=pos))
 
     # ------------------------------------------------------------------
@@ -313,13 +392,16 @@ class Game:
     def _run_pulling(self, player: Player, state: GameState) -> None:
         self._emit(_event("pulling_start", player=player))
 
+        # Apply bonus coins from fortune card
+        if self._bonus_coins:
+            player.coins += self._bonus_coins
+
         while True:
             if player.bag.is_empty:
                 break
             if player.cauldron.exploded:
                 break
 
-            # Strategy decides to continue or stop
             if not player.strategy.should_continue_pulling(player, state):
                 player._current_record.stopped_voluntarily = True
                 self._emit(_event("player_stopped", player=player,
@@ -327,23 +409,41 @@ class Game:
                                   white_sum=player.cauldron.white_sum))
                 break
 
-            # Draw chip
             chip = player.draw_chip()
             self._emit(_event("chip_drawn", player=player, chip=str(chip),
                               white_sum_before=player.cauldron.white_sum))
 
-            # Check flask (before placing)
-            if player.flask_full and player.strategy.use_flask(player, state, chip):
+            # Flask check (before placing); respect NO_FLASK fortune card
+            if (player.flask_full and not self._flask_disabled
+                    and player.strategy.use_flask(player, state, chip)):
                 player.use_flask(chip)
                 self._emit(_event("flask_used", player=player, chip_returned=str(chip)))
                 continue
 
-            # Place chip in cauldron
-            pos, ruby_spaces = player.place_chip(chip)
+            # Apply strong ingredient bonus (advance extra for non-white)
+            if self._strong_ingredient_bonus and chip.color != ChipColor.WHITE:
+                # Temporarily boost chip value by creating a proxy
+                boosted_value = chip.value + self._strong_ingredient_bonus
+                from quacks.chips import Chip as ChipCls
+                boosted_chip = ChipCls(chip.color, boosted_value)
+                pos, ruby_spaces = player.place_chip(boosted_chip)
+                # But record the actual chip drawn
+                player.cauldron._placed[-1] = type(player.cauldron._placed[-1])(
+                    chip, pos, player.cauldron._placed[-1].draw_order
+                )
+            else:
+                pos, ruby_spaces = player.place_chip(chip)
+
+            # Extra ruby on landing (fortune card)
+            if self._extra_ruby_on_landing and ruby_spaces:
+                player.rubies += len(ruby_spaces)
+                if player._current_record:
+                    player._current_record.rubies_earned += len(ruby_spaces)
+
             self._emit(_event("chip_placed", player=player, chip=str(chip),
                               position=pos, rubies_hit=ruby_spaces))
 
-            # Yellow effect: may return preceding white chip
+            # Yellow effect
             if chip.color == ChipColor.YELLOW:
                 page = player.book_pages.get(ChipColor.YELLOW, 1)
                 effect = get_effect(ChipColor.YELLOW, page)
@@ -353,7 +453,7 @@ class Game:
                         self._emit(_event("yellow_power", player=player,
                                           returned=result["yellow_returned_white"]))
 
-            # Blue effect: additional chip placement
+            # Blue effect
             if chip.color == ChipColor.BLUE:
                 page = player.book_pages.get(ChipColor.BLUE, 1)
                 if page == 1:
@@ -364,7 +464,7 @@ class Game:
                             self._emit(_event("blue_power", player=player,
                                               placed=result["blue_placed"]))
 
-            # Red effect: extra spaces from orange
+            # Red effect
             if chip.color == ChipColor.RED:
                 page = player.book_pages.get(ChipColor.RED, 1)
                 effect = get_effect(ChipColor.RED, page)
@@ -393,7 +493,6 @@ class Game:
     # ------------------------------------------------------------------
 
     def _run_evaluation_a(self, state: GameState) -> None:
-        # Determine who rolled bonus die (highest non-exploded cauldron pos)
         non_exploded = [p for p in self.players if not p.cauldron.exploded]
         if non_exploded:
             max_pos = max(p.cauldron.position for p in non_exploded)
@@ -416,10 +515,12 @@ class Game:
                     self._emit(_event("explosion_choice_vp", player=player, vp=vp))
                 else:
                     player.earn_coins(reward.coins)
-                    self._emit(_event("explosion_choice_coins", player=player, coins=reward.coins))
+                    self._emit(_event("explosion_choice_coins", player=player,
+                                      coins=reward.coins))
             else:
                 vp = reward.vp * self._vp_multiplier
-                if self._stop_bonus_vp and player._current_record and player._current_record.stopped_voluntarily:
+                if (self._stop_bonus_vp and player._current_record
+                        and player._current_record.stopped_voluntarily):
                     vp += self._stop_bonus_vp
                 player.score_vp(vp)
                 player.earn_coins(reward.coins)
@@ -438,12 +539,11 @@ class Game:
                 player.bag.add(ORANGE_1)
 
     # ------------------------------------------------------------------
-    # Evaluation B: special ingredient effects
+    # Evaluation B: ingredient effects
     # ------------------------------------------------------------------
 
     def _run_evaluation_b(self, state: GameState) -> None:
         for player in self.players:
-            # Green page 1: bonus if white sum = 7
             green_page = player.book_pages.get(ChipColor.GREEN, 1)
             if green_page == 1:
                 effect = get_effect(ChipColor.GREEN, 1)
@@ -453,7 +553,6 @@ class Game:
                     if advance:
                         if player._current_record:
                             player._current_record.green_advance = advance
-                        # Re-score with new position
                         old_reward = cauldron_reward(player.cauldron.position - advance)
                         new_reward = player.cauldron.reward
                         extra_vp = (new_reward.vp - old_reward.vp) * self._vp_multiplier
@@ -469,13 +568,10 @@ class Game:
                 if effect:
                     effect.apply(player, state)
 
-            # Black effect
             black_page = player.book_pages.get(ChipColor.BLACK, 1)
             black_effect = get_effect(ChipColor.BLACK, black_page)
             if black_effect and player.cauldron.count_color(ChipColor.BLACK) > 0:
                 black_effect.apply(player, state)
-
-            # Purple effect (applied in buying phase, prepared here)
 
     # ------------------------------------------------------------------
     # Evaluation D: buying
@@ -483,7 +579,6 @@ class Game:
 
     def _run_evaluation_d(self, state: GameState) -> None:
         for player in self.players:
-            # Purple upgrade (if purple in pot)
             purple_page = player.book_pages.get(ChipColor.PURPLE, 1)
             purple_effect = get_effect(ChipColor.PURPLE, purple_page)
             if purple_effect and player.cauldron.count_color(ChipColor.PURPLE) > 0:
@@ -493,7 +588,6 @@ class Game:
                     self._emit(_event("purple_upgrade", player=player,
                                       upgrade=result["purple_upgrade"]))
 
-            # Regular purchases
             if player.coins > 0:
                 purchases = player.strategy.choose_purchases(player, state, player.coins)
                 for chip in purchases:
@@ -505,9 +599,6 @@ class Game:
                         player.buy_chip(chip, cost)
                         self._emit(_event("chip_purchased", player=player,
                                           chip=str(chip), cost=cost))
-                    else:
-                        self._emit(_event("purchase_failed", player=player,
-                                          chip=str(chip), reason=reason))
 
     # ------------------------------------------------------------------
     # Evaluation E: ruby spending + reset
@@ -518,24 +609,20 @@ class Game:
             advances, refill = player.strategy.choose_ruby_spending(player, state)
             if refill:
                 player.spend_rubies_for_flask()
-            actual_advances = player.spend_rubies_for_droplet(advances)
-            if actual_advances:
-                self._emit(_event("droplet_ruby_advance", player=player, advances=actual_advances))
+            player.spend_rubies_for_droplet(advances)
 
     # ------------------------------------------------------------------
-    # Rat stone computation (for next round)
+    # Rat stone computation
     # ------------------------------------------------------------------
 
     def _compute_rat_advances(self) -> dict[str, int]:
-        """Compute how many rat stone spaces each player gets next round."""
         if self.round_number == 1:
             return {p.name: 0 for p in self.players}
         leader_score = max(p.scoring_position for p in self.players)
-        advances = {}
-        for player in self.players:
-            gap = max(0, leader_score - player.scoring_position)
-            advances[player.name] = gap * self._rat_multiplier
-        return advances
+        return {
+            p.name: max(0, leader_score - p.scoring_position) * self._rat_multiplier
+            for p in self.players
+        }
 
     # ------------------------------------------------------------------
     # End of game
@@ -545,14 +632,11 @@ class Game:
         self.phase = GamePhase.GAME_OVER
         final_scores: dict[str, int] = {}
         for player in self.players:
-            # Convert remaining rubies to VP
             ruby_vp = rubies_to_vp(player.rubies)
-            total_vp = player.scoring_position + ruby_vp
-            final_scores[player.name] = total_vp
+            final_scores[player.name] = player.scoring_position + ruby_vp
 
-        # Tie-break randomly among players with the highest score
         max_score = max(final_scores.values())
-        top_players = [name for name, vp in final_scores.items() if vp == max_score]
+        top_players = [n for n, v in final_scores.items() if v == max_score]
         winner = self.rng.choice(top_players)
         self._emit(_event("game_over", scores=final_scores, winner=winner))
         return GameResult(
@@ -570,7 +654,7 @@ class Game:
 @dataclass
 class GameResult:
     players: list[Player]
-    final_scores: dict[str, int]          # name → total VP
+    final_scores: dict[str, int]
     winner_name: str
     rounds_played: int
 
@@ -579,7 +663,6 @@ class GameResult:
         return next(p for p in self.players if p.name == self.winner_name)
 
     def standings(self) -> list[tuple[str, int]]:
-        """Return [(name, vp), ...] sorted by VP descending."""
         return sorted(self.final_scores.items(), key=lambda x: -x[1])
 
     def __repr__(self) -> str:

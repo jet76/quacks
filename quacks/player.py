@@ -24,6 +24,7 @@ class RoundRecord:
     stopped_voluntarily: bool = False
     exploded: bool = False
     cauldron_position: int = 0
+    white_sum: int = 0          # white chip sum at end of pulling (captured before reset)
     explosion_choice: Optional[ExplosionChoice] = None
     vp_scored: int = 0
     coins_earned: int = 0
@@ -81,6 +82,7 @@ class Player:
         assert rec is not None, "end_round called without begin_round"
         rec.scoring_position_after = self.scoring_position
         rec.cauldron_position = self.cauldron.position
+        rec.white_sum = self.cauldron.white_sum   # capture before reset clears it
         rec.exploded = self.cauldron.exploded
 
         # Chips drawn during pulling were removed from the bag; chips_from_pot
@@ -143,12 +145,12 @@ class Player:
                     self._current_record.rubies_earned += 1
         self.scoring_position = new
         if self._current_record:
-            self._current_record.vp_scored = vp
+            self._current_record.vp_scored += vp
 
     def earn_coins(self, coins: int) -> None:
         self.coins += coins
         if self._current_record:
-            self._current_record.coins_earned = coins
+            self._current_record.coins_earned += coins
 
     # ------------------------------------------------------------------
     # Buying phase
