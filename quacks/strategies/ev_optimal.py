@@ -1,22 +1,29 @@
-"""Expected-Value Optimal stopping strategy using full recursive DP.
+"""Expected-Value stopping strategy.
 
-At each draw decision the strategy computes the exact expected value of
-drawing one more chip (then continuing optimally) versus stopping now.
-It draws if and only if E[draw] > E[stop].
+At each draw decision computes the expected marginal value of drawing one
+more chip versus stopping now, using a two-tier approach:
 
-The DP state is (sorted_chip_tuple, white_sum_in_pot, cauldron_position).
-Memoisation makes a single round's computation ~1 ms even for bags of 15+.
+  EV(stop)  = VP(pos) + coins(pos) * coin_rate
+  EV(draw)  = average over all chips in bag of:
+               - explosion_value(new_pos)   if draw would explode
+               - stop_value(new_pos)        otherwise   [one-step lookahead]
 
-coin_rate converts coins into a VP-equivalent for the EV calculation.
-A value of 0.25 means four coins ≈ one VP — reasonable for mid-game when
-purchased chips still have several rounds to contribute.
+Draws if EV(draw) > EV(stop).
+
+This one-step lookahead is O(n) per decision (n = bag size), making it
+fast enough for batch simulations while still being meaningfully smarter
+than simple white-sum thresholds: it correctly weights explosion risk,
+marginal VP at the landing position, and coins, all from the actual bag
+composition rather than a fixed heuristic.
+
+coin_rate converts coins into VP-equivalent. 0.25 → 4 coins ≈ 1 VP.
 """
 
 from __future__ import annotations
 from collections import Counter
 from typing import TYPE_CHECKING
 
-from quacks.enums import ChipColor, ExplosionChoice
+from quacks.enums import ChipColor
 from quacks.scoring import cauldron_reward, MAX_CAULDRON_POSITION
 from quacks.strategies.base import PlayerStrategy
 
@@ -31,7 +38,15 @@ def _chip_key(chip: "Chip") -> tuple:
 
 
 class EVOptimalStrategy(PlayerStrategy):
-    """Exact EV-optimal pull-or-stop decisions via recursive DP with memoisation."""
+    """One-step EV-optimal pull-or-stop decisions based on bag composition.
+
+    At each decision the strategy considers the expected outcome of drawing
+    exactly one more chip (then assuming we stop):
+      - Each chip in the bag is equally likely to be drawn
+      - Drawing a chip that causes explosion yields explosion_value(new_pos)
+      - Drawing a safe chip yields stop_value(new_pos)
+    Draws iff this one-step EV exceeds stop_value(current_pos).
+    """
 
     def __init__(self, coin_rate: float = 0.25) -> None:
         self.coin_rate = coin_rate
@@ -49,17 +64,17 @@ class EVOptimalStrategy(PlayerStrategy):
         if cauldron.exploded or player.bag.is_empty:
             return False
 
-        chips = tuple(sorted(player.bag.all_chips(), key=_chip_key))
+        chips = player.bag.all_chips()
         white_sum = cauldron.white_sum
         position = cauldron.position
-        memo: dict = {}
+        n = len(chips)
 
         stop_val = self._stop_value(position)
-        draw_val = self._draw_ev(chips, white_sum, position, memo)
+        draw_val = self._one_step_ev(chips, white_sum, position, n)
         return draw_val > stop_val
 
     # ------------------------------------------------------------------
-    # DP helpers
+    # One-step EV
     # ------------------------------------------------------------------
 
     def _stop_value(self, position: int) -> float:
@@ -67,56 +82,17 @@ class EVOptimalStrategy(PlayerStrategy):
         return r.vp + r.coins * self.coin_rate
 
     def _explosion_value(self, position: int) -> float:
-        """When exploded at position: player takes the better of VP or coins."""
         r = cauldron_reward(position)
         return max(float(r.vp), r.coins * self.coin_rate)
 
-    def _optimal_value(
-        self,
-        chips: tuple,
-        white_sum: int,
-        position: int,
-        memo: dict,
+    def _one_step_ev(
+        self, chips: list, white_sum: int, position: int, n: int
     ) -> float:
-        """Optimal expected total value from this state (VP + coin-eq).
-
-        Returns max(stop_now, E[draw_optimally]).
-        """
-        key = (chips, white_sum, position)
-        if key in memo:
-            return memo[key]
-
-        stop_val = self._stop_value(position)
-        if not chips:
-            memo[key] = stop_val
-            return stop_val
-
-        draw_val = self._draw_ev(chips, white_sum, position, memo)
-        result = max(stop_val, draw_val)
-        memo[key] = result
-        return result
-
-    def _draw_ev(
-        self,
-        chips: tuple,
-        white_sum: int,
-        position: int,
-        memo: dict,
-    ) -> float:
-        """Expected value of drawing one chip, then continuing optimally.
-
-        Deduplicates identical chip types to avoid redundant sub-tree work.
-        """
-        n = len(chips)
-        chip_list = list(chips)
-        chip_counts = Counter(chip_list)
+        """Expected value of drawing one chip and then stopping."""
+        chip_counts = Counter(chips)
         total = 0.0
 
         for chip, count in chip_counts.items():
-            remaining_list = chip_list.copy()
-            remaining_list.remove(chip)            # removes first occurrence
-            remaining = tuple(remaining_list)      # still sorted (sorted - one item)
-
             if chip.color == ChipColor.WHITE:
                 new_white = white_sum + chip.value
             else:
@@ -125,16 +101,16 @@ class EVOptimalStrategy(PlayerStrategy):
             new_pos = min(position + chip.value, MAX_CAULDRON_POSITION)
 
             if chip.color == ChipColor.WHITE and new_white > 7:
-                chip_ev = self._explosion_value(new_pos)
+                val = self._explosion_value(new_pos)
             else:
-                chip_ev = self._optimal_value(remaining, new_white, new_pos, memo)
+                val = self._stop_value(new_pos)
 
-            total += chip_ev * count
+            total += val * count
 
         return total / n
 
     # ------------------------------------------------------------------
-    # Buying: prefer high-value non-white chips; avoid diluting the bag
+    # Buying
     # ------------------------------------------------------------------
 
     def choose_purchases(

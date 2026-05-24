@@ -175,16 +175,22 @@ class TestEVOptimalStrategy:
         win_rate = ev_wins / n
         assert win_rate >= 0.28, f"EVOptimal win rate {win_rate:.1%} is unexpectedly low"
 
-    def test_memoisation_consistency(self):
-        """Same bag/white_sum/position always returns the same EV."""
+    def test_one_step_ev_deterministic(self):
+        """Same bag/white_sum/position always returns the same one-step EV."""
         strat = EVOptimalStrategy()
-        chips = tuple(sorted([WHITE_1, WHITE_2, GREEN_1, ORANGE_1],
-                              key=lambda c: (c.color.value, c.value)))
-        memo1: dict = {}
-        memo2: dict = {}
-        ev1 = strat._draw_ev(chips, 0, 5, memo1)
-        ev2 = strat._draw_ev(chips, 0, 5, memo2)
+        chips = [WHITE_1, WHITE_2, GREEN_1, ORANGE_1]
+        ev1 = strat._one_step_ev(chips, 0, 5, len(chips))
+        ev2 = strat._one_step_ev(chips, 0, 5, len(chips))
         assert abs(ev1 - ev2) < 1e-12
+
+    def test_one_step_ev_increases_with_safe_bag(self):
+        """EV of drawing should increase when advancing crosses a VP boundary."""
+        strat = EVOptimalStrategy(coin_rate=0.0)
+        # Position 4 (VP=0) → draw GREEN_1 → position 5 (VP=1): clear gain
+        chips_safe = [GREEN_1, GREEN_1, GREEN_1, GREEN_1]
+        ev_safe = strat._one_step_ev(chips_safe, 0, 4, len(chips_safe))
+        stop_val = strat._stop_value(4)
+        assert ev_safe > stop_val
 
     def test_choose_purchases_avoids_white(self):
         """EVOptimal should not buy white chips (none available in market)."""
