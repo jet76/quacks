@@ -70,6 +70,10 @@ class _VerboseWrapper:
 # Event handler
 # ---------------------------------------------------------------------------
 
+def _ability(label: str, detail: str) -> None:
+    print(f"     ★ {label}: {detail}")
+
+
 def _make_handler(player_name: str):
     ctx = {"round": 0, "draws": 0}
 
@@ -77,6 +81,7 @@ def _make_handler(player_name: str):
         t = ev["type"]
         pn = ev.get("player", "")
 
+        # ── Round header ────────────────────────────────────────────────
         if t == "round_start":
             ctx["round"] = ev["round"]
             ctx["draws"] = 0
@@ -84,37 +89,59 @@ def _make_handler(player_name: str):
             print(f"  Round {ev['round']} of {TOTAL_ROUNDS}")
             print(f"{'═' * _RULE_WIDTH}")
 
+        elif t == "fortune_card":
+            print(f"  Fortune  : [{ev['name']}]  {ev['effect']}")
+
+        elif t == "fortune_bonus_ruby" and pn == player_name:
+            _ability("Fortune bonus", f"+{ev['magnitude']} ruby")
+
+        elif t == "catchup_coins" and pn == player_name:
+            _ability("Catchup", f"+{ev['bonus']} coins (trailing player bonus)")
+
+        elif t == "round6_white_added" and pn == player_name:
+            _ability("Round 6 rule", "White(1) added to your bag")
+
+        # ── Chip draw ───────────────────────────────────────────────────
         elif t == "chip_drawn" and pn == player_name:
             ctx["draws"] += 1
             print(f"\n  → Drew {ev['chip']}  (white_sum before: {ev['white_sum_before']})")
 
         elif t == "flask_used" and pn == player_name:
-            print(f"  → Flask: returned {ev['chip_returned']} to bag")
+            _ability("Flask", f"returned {ev['chip_returned']} to bag")
 
         elif t == "chip_placed" and pn == player_name:
-            rubies = (f"  +{len(ev['rubies_hit'])} ruby space"
+            rubies = (f"  +{len(ev['rubies_hit'])} ruby"
                       if ev.get("rubies_hit") else "")
-            print(f"     Placed at position {ev['position']}{rubies}")
+            print(f"     placed at position {ev['position']}{rubies}")
 
+        # ── Ingredient powers (on-draw) ─────────────────────────────────
         elif t == "yellow_power" and pn == player_name:
             ret = ev.get("returned")
             if ret:
-                print(f"     Yellow power: returned {ret} to bag")
+                _ability("Yellow", f"returned {ret} to bag")
 
         elif t == "blue_power" and pn == player_name:
             placed = ev.get("placed")
             if placed:
-                print(f"     Blue power: placed {placed} from top of bag")
+                _ability("Blue", f"pulled {placed} from top of bag → placed in pot")
 
         elif t == "red_power" and pn == player_name:
-            print(f"     Red power: +{ev['extra']} position advance")
+            _ability("Red", f"+{ev['extra']} extra positions")
 
+        # ── Explosion ───────────────────────────────────────────────────
         elif t == "explosion" and pn == player_name:
-            print(f"\n  *** EXPLOSION at position {ev['position']}"
-                  f"  (white_sum {ev['white_sum']}) ***")
+            print(f"\n  *** EXPLOSION  position {ev['position']}"
+                  f"  white_sum {ev['white_sum']} ***")
 
+        elif t == "explosion_choice_vp" and pn == player_name:
+            print(f"  Chose     : +{ev['vp']} VP  (skipped coins)")
+
+        elif t == "explosion_choice_coins" and pn == player_name:
+            print(f"  Chose     : +{ev['coins']} coins  (skipped VP)")
+
+        # ── End of pulling ──────────────────────────────────────────────
         elif t == "player_stopped" and pn == player_name:
-            print(f"\n  Stopped voluntarily at position {ev['pos']}"
+            print(f"\n  Stopped at position {ev['pos']}"
                   f"  (white_sum {ev['white_sum']})")
 
         elif t == "pulling_end" and pn == player_name:
@@ -124,26 +151,48 @@ def _make_handler(player_name: str):
             print(f"  Pulled {n} chip{'s' if n != 1 else ''},  "
                   f"{status} at position {ev['position']}")
 
+        # ── Evaluation phase abilities ───────────────────────────────────
+        elif t == "green_power" and pn == player_name:
+            adv = ev.get("advance", 0)
+            vp = ev.get("extra_vp", 0)
+            rubies = ev.get("rubies", 0)
+            if adv:
+                _ability("Green", f"+{adv} position advance"
+                         + (f",  +{vp} VP" if vp else ""))
+            if rubies:
+                _ability("Green", f"+{rubies} {'ruby' if rubies == 1 else 'rubies'}")
+
+        elif t == "purple_upgrade" and pn == player_name:
+            _ability("Purple", f"upgraded {ev['upgrade']}")
+
+        elif t == "bonus_die" and pn == player_name:
+            _ability("Bonus die", f"rolled {ev['face']}")
+
+        elif t == "droplet_advanced" and pn == player_name:
+            _ability("Droplet", f"advanced +{ev['amount']}")
+
+        elif t == "free_chip_taken" and pn == player_name:
+            _ability("Fortune free chip", str(ev.get("chip", "")))
+
+        elif t == "winner_free_chip" and pn == player_name:
+            _ability("Winner free chip", str(ev.get("chip", "")))
+
+        elif t == "free_upgrade" and pn == player_name:
+            _ability("Free upgrade", str(ev.get("upgrade", "")))
+
+        # ── Scoring / purchases ─────────────────────────────────────────
         elif t == "scoring" and pn == player_name:
             print(f"  Score    : +{ev['vp']} VP,  +{ev['coins']} coins")
 
         elif t == "chip_purchased" and pn == player_name:
             print(f"  Bought   : {ev['chip']}  ({ev['cost']}c)")
 
-        elif t == "green_power" and pn == player_name:
-            adv = ev.get("advance", 0)
-            vp = ev.get("extra_vp", 0)
-            if adv:
-                print(f"  Green power: +{adv} position advance")
-            if vp:
-                print(f"  Green power: +{vp} bonus VP")
-
+        # ── Round and game summary ──────────────────────────────────────
         elif t == "round_complete":
             scores = ev.get("scores", {})
             if scores:
                 print(f"\n  Running totals:")
-                for name, vp in sorted(scores.items(),
-                                       key=lambda kv: -kv[1]):
+                for name, vp in sorted(scores.items(), key=lambda kv: -kv[1]):
                     marker = " ◀" if name == player_name else ""
                     print(f"    {name:<20} {vp:>4} VP{marker}")
 

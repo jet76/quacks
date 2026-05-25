@@ -622,10 +622,15 @@ class Game:
                     if not player.cauldron.exploded and extra_coins > 0:
                         player.earn_coins(extra_coins)
                     self._emit(_event("green_power", player=player,
-                                      advance=advance, extra_vp=extra_vp))
+                                      advance=advance, extra_vp=extra_vp,
+                                      rubies=0))
                 rubies = result.get("rubies_earned", 0)
-                if rubies and player._current_record:
-                    player._current_record.rubies_earned += rubies
+                if rubies:
+                    player.rubies += rubies
+                    if player._current_record:
+                        player._current_record.rubies_earned += rubies
+                    self._emit(_event("green_power", player=player,
+                                      advance=0, extra_vp=0, rubies=rubies))
 
             black_page = player.book_pages.get(ChipColor.BLACK, 1)
             black_effect = get_effect(ChipColor.BLACK, black_page)
