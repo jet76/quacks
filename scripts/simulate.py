@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Simulate a single player and print draw probabilities at every step.
+
+Usage:
+    python scripts/simulate.py                   # threshold strategy, random seed
+    python scripts/simulate.py --strategy ev     # EV-optimal strategy
+    python scripts/simulate.py --seed 42         # reproducible run
+    python scripts/simulate.py --strategy mc --seed 7
+"""
+
+from __future__ import annotations
+import argparse
+import random
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from quacks.game import Game, TOTAL_ROUNDS
+from quacks.player import Player
+from quacks.enums import ChipColor
+from quacks.strategies.threshold import ThresholdStrategy
+from quacks.strategies.ev_optimal import EVOptimalStrategy
+from quacks.strategies.monte_carlo import MonteCarloStrategy
+from quacks.strategies.human import _show_bag, _show_pot, _rule
+
+
+_STRATEGIES: dict[str, object] = {
+    "threshold": lambda: ThresholdStrategy(4),
+    "ev": EVOptimalStrategy,
+    "mc": lambda: MonteCarloStrategy(200),
+}
+
+_RULE_WIDTH = 58
+
+
+# ---------------------------------------------------------------------------
+# Verbose strategy wrapper
+# ---------------------------------------------------------------------------
+
+class _VerboseWrapper:
+    """Duck-type wrapper that prints bag probabilities before each pull decision.
+
+    All methods not overridden here are forwarded to the inner strategy via
+    __getattr__, so no per-method boilerplate is needed.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    @property
+    def name(self) -> str:
+        return self._inner.name
+
+    def should_continue_pulling(self, player, state) -> bool:
+        if player.cauldron.exploded or player.bag.is_empty:
+            return False
+        print()
+        _show_pot(player)
+        _show_bag(player)
+        result = self._inner.should_continue_pulling(player, state)
+        print(f"  Decision : {'DRAW' if result else 'STOP'}")
+        return result
+
+
+# ---------------------------------------------------------------------------
+# Event handler
+# ---------------------------------------------------------------------------
+
+def _make_handler(player_name: str):
+    ctx = {"round": 0, "draws": 0}
+
+    def handler(ev):
+        t = ev["type"]
+        pn = ev.get("player", "")
+
+        if t == "round_start":
+            ctx["round"] = ev["round"]
+            ctx["draws"] = 0
+            print(f"\n{'═' * _RULE_WIDTH}")
+            print(f"  Round {ev['round']} of {TOTAL_ROUNDS}")
+            print(f"{'═' * _RULE_WIDTH}")
+
+        elif t == "chip_drawn" and pn == player_name:
+            ctx["draws"] += 1
+            print(f"\n  → Drew {ev['chip']}  (white_sum before: {ev['white_sum_before']})")
+
+        elif t == "flask_used" and pn == player_name:
+            print(f"  → Flask: returned {ev['chip_returned']} to bag")
+
+        elif t == "chip_placed" and pn == player_name:
+            rubies = (f"  +{len(ev['rubies_hit'])} ruby space"
+                      if ev.get("rubies_hit") else "")
+            print(f"     Placed at position {ev['position']}{rubies}")
+
+        elif t == "yellow_power" and pn == player_name:
+            ret = ev.get("returned")
+            if ret:
+                print(f"     Yellow power: returned {ret} to bag")
+
+        elif t == "blue_power" and pn == player_name:
+            placed = ev.get("placed")
+            if placed:
+                print(f"     Blue power: placed {placed} from top of bag")
+
+        elif t == "red_power" and pn == player_name:
+            print(f"     Red power: +{ev['extra']} position advance")
+
+        elif t == "explosion" and pn == player_name:
+            print(f"\n  *** EXPLOSION at position {ev['position']}"
+                  f"  (white_sum {ev['white_sum']}) ***")
+
+        elif t == "player_stopped" and pn == player_name:
+            print(f"\n  Stopped voluntarily at position {ev['pos']}"
+                  f"  (white_sum {ev['white_sum']})")
+
+        elif t == "pulling_end" and pn == player_name:
+            n = ctx["draws"]
+            status = "EXPLODED" if ev["exploded"] else "stopped"
+            print(f"\n  {_rule('─', 44)}")
+            print(f"  Pulled {n} chip{'s' if n != 1 else ''},  "
+                  f"{status} at position {ev['position']}")
+
+        elif t == "scoring" and pn == player_name:
+            print(f"  Score    : +{ev['vp']} VP,  +{ev['coins']} coins")
+
+        elif t == "chip_purchased" and pn == player_name:
+            print(f"  Bought   : {ev['chip']}  ({ev['cost']}c)")
+
+        elif t == "green_power" and pn == player_name:
+            adv = ev.get("advance", 0)
+            vp = ev.get("extra_vp", 0)
+            if adv:
+                print(f"  Green power: +{adv} position advance")
+            if vp:
+                print(f"  Green power: +{vp} bonus VP")
+
+        elif t == "round_complete":
+            scores = ev.get("scores", {})
+            if scores:
+                print(f"\n  Running totals:")
+                for name, vp in sorted(scores.items(),
+                                       key=lambda kv: -kv[1]):
+                    marker = " ◀" if name == player_name else ""
+                    print(f"    {name:<20} {vp:>4} VP{marker}")
+
+        elif t == "game_over":
+            print(f"\n{'═' * _RULE_WIDTH}")
+            print(f"  GAME OVER")
+            print(f"{'═' * _RULE_WIDTH}")
+            scores = ev.get("scores", {})
+            winner = ev.get("winner", "")
+            for name, vp in sorted(scores.items(), key=lambda kv: -kv[1]):
+                marker = "  ◀ winner" if name == winner else ""
+                print(f"  {name:<20} {vp:>4} VP{marker}")
+            print()
+
+    return handler
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Simulate one player and show draw probabilities at each step"
+    )
+    ap.add_argument(
+        "--strategy",
+        choices=list(_STRATEGIES),
+        default="threshold",
+        help="AI strategy to simulate (default: threshold)",
+    )
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="RNG seed for a reproducible run",
+    )
+    args = ap.parse_args()
+
+    rng = random.Random(args.seed)
+    inner = _STRATEGIES[args.strategy]()
+    player = Player("Player", _VerboseWrapper(inner))
+    # Ghost opponent keeps the 2-player minimum and activates rat stone/catchup
+    ghost = Player("Ghost", ThresholdStrategy(4))
+
+    print(f"\n  Strategy : {inner.name}")
+    print(f"  Seed     : {args.seed if args.seed is not None else '(random)'}")
+    print(f"  Rounds   : {TOTAL_ROUNDS}")
+
+    game = Game(
+        players=[player, ghost],
+        rng=rng,
+        event_handlers=[_make_handler(player.name)],
+    )
+    game.run()
+
+
+if __name__ == "__main__":
+    main()
