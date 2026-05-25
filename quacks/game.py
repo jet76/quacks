@@ -488,16 +488,15 @@ class Game:
                         self._emit(_event("yellow_power", player=player,
                                           returned=result["yellow_returned_white"]))
 
-            # Blue effect
+            # Blue effect (all pages)
             if chip.color == ChipColor.BLUE:
                 page = player.book_pages.get(ChipColor.BLUE, 1)
-                if page == 1:
-                    effect = get_effect(ChipColor.BLUE, 1)
-                    if effect:
-                        result = effect.apply(player, state, chip=chip)
-                        if result.get("blue_placed"):
-                            self._emit(_event("blue_power", player=player,
-                                              placed=result["blue_placed"]))
+                effect = get_effect(ChipColor.BLUE, page)
+                if effect:
+                    result = effect.apply(player, state, chip=chip)
+                    if result.get("blue_placed"):
+                        self._emit(_event("blue_power", player=player,
+                                          placed=result["blue_placed"]))
 
             # Red effect
             if chip.color == ChipColor.RED:
@@ -580,28 +579,26 @@ class Game:
     def _run_evaluation_b(self, state: GameState) -> None:
         for player in self.players:
             green_page = player.book_pages.get(ChipColor.GREEN, 1)
-            if green_page == 1:
-                effect = get_effect(ChipColor.GREEN, 1)
-                if effect:
-                    result = effect.apply(player, state)
-                    advance = result.get("green_advance", 0)
-                    if advance:
-                        if player._current_record:
-                            player._current_record.green_advance = advance
-                        old_reward = cauldron_reward(player.cauldron.position - advance)
-                        new_reward = player.cauldron.reward
-                        extra_vp = (new_reward.vp - old_reward.vp) * self._vp_multiplier
-                        extra_coins = new_reward.coins - old_reward.coins
-                        if extra_vp > 0:
-                            player.score_vp(extra_vp)
-                        if not player.cauldron.exploded and extra_coins > 0:
-                            player.earn_coins(extra_coins)
-                        self._emit(_event("green_power", player=player,
-                                          advance=advance, extra_vp=extra_vp))
-            elif green_page == 2:
-                effect = get_effect(ChipColor.GREEN, 2)
-                if effect:
-                    effect.apply(player, state)
+            effect = get_effect(ChipColor.GREEN, green_page)
+            if effect:
+                result = effect.apply(player, state)
+                advance = result.get("green_advance", 0)
+                if advance:
+                    if player._current_record:
+                        player._current_record.green_advance = advance
+                    old_reward = cauldron_reward(player.cauldron.position - advance)
+                    new_reward = player.cauldron.reward
+                    extra_vp = (new_reward.vp - old_reward.vp) * self._vp_multiplier
+                    extra_coins = new_reward.coins - old_reward.coins
+                    if extra_vp > 0:
+                        player.score_vp(extra_vp)
+                    if not player.cauldron.exploded and extra_coins > 0:
+                        player.earn_coins(extra_coins)
+                    self._emit(_event("green_power", player=player,
+                                      advance=advance, extra_vp=extra_vp))
+                rubies = result.get("rubies_earned", 0)
+                if rubies and player._current_record:
+                    player._current_record.rubies_earned += rubies
 
             black_page = player.book_pages.get(ChipColor.BLACK, 1)
             black_effect = get_effect(ChipColor.BLACK, black_page)
@@ -655,7 +652,7 @@ class Game:
             return {p.name: 0 for p in self.players}
         leader_score = max(p.scoring_position for p in self.players)
         return {
-            p.name: max(0, leader_score - p.scoring_position) * self._rat_multiplier
+            p.name: max(0, (leader_score - p.scoring_position) // 2) * self._rat_multiplier
             for p in self.players
         }
 

@@ -132,5 +132,64 @@ class PlayerStrategy(ABC):
             key=lambda c: (CHIP_COSTS.get((c.color, c.value), 0), c.value),
         )
 
+    # ------------------------------------------------------------------
+    # Yellow ingredient decisions
+    # ------------------------------------------------------------------
+
+    def choose_white_to_return(
+        self, player: "Player", state: "GameState", whites: list["Chip"]
+    ) -> Optional["Chip"]:
+        """Yellow page 2: which white chip in the pot to return to bag.
+
+        Default: return the lowest-value white (minimises future explosion risk).
+        """
+        if not whites:
+            return None
+        return min(whites, key=lambda c: c.value)
+
+    def choose_chip_to_return(
+        self, player: "Player", state: "GameState", chips: list["Chip"]
+    ) -> Optional["Chip"]:
+        """Yellow page 3: which chip (any color) in the pot to return to bag.
+
+        Default: return the highest-value white; if no whites, do nothing.
+        """
+        from quacks.enums import ChipColor
+        whites = [c for c in chips if c.color == ChipColor.WHITE]
+        if whites:
+            return max(whites, key=lambda c: c.value)
+        return None
+
+    def choose_chips_to_return(
+        self, player: "Player", state: "GameState", chips: list["Chip"], max_n: int
+    ) -> list["Chip"]:
+        """Yellow page 4: up to max_n chips (any color) to return from pot to bag.
+
+        Default: return highest-value whites up to max_n.
+        """
+        from quacks.enums import ChipColor
+        whites = sorted(
+            [c for c in chips if c.color == ChipColor.WHITE],
+            key=lambda c: -c.value,
+        )
+        return whites[:max_n]
+
+    # ------------------------------------------------------------------
+    # Black ingredient decisions
+    # ------------------------------------------------------------------
+
+    def choose_chip_to_remove(
+        self, player: "Player", state: "GameState", peeked: list["Chip"]
+    ) -> Optional["Chip"]:
+        """Black page 4: which peeked chip to permanently remove from the bag.
+
+        Default: remove the highest-value white chip (bag thinning); otherwise None.
+        """
+        from quacks.enums import ChipColor
+        whites = [c for c in peeked if c.color == ChipColor.WHITE]
+        if whites:
+            return max(whites, key=lambda c: c.value)
+        return None
+
     def __repr__(self) -> str:
         return f"{self.name}()"

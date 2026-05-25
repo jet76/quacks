@@ -2,14 +2,18 @@
 
 Effect handlers are dataclasses with an apply() method. They are called
 by the game engine at the appropriate phase.
+
+[VERIFY] markers flag rules reconstructed from community sources rather than
+confirmed against the physical game rulebook.
 """
 
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from quacks.enums import ChipColor
+from quacks.scoring import MAX_CAULDRON_POSITION
+from quacks.cauldron import PlacedChip
 
 if TYPE_CHECKING:
     from quacks.player import Player
@@ -34,10 +38,6 @@ class IngredientEffect(ABC):
 # ---------------------------------------------------------------------------
 
 class WhiteEffect(IngredientEffect):
-    """White chips are handled inline by the game engine (explosion check).
-
-    This stub exists for completeness and statistics hooks.
-    """
     @property
     def phase(self) -> str:
         return "on_draw"
@@ -48,17 +48,16 @@ class WhiteEffect(IngredientEffect):
 
 
 # ---------------------------------------------------------------------------
-# ORANGE — Pumpkin  (no special effect; enables Red bonus)
+# ORANGE — Pumpkin  (no special effect of its own; enables Red bonus)
 # ---------------------------------------------------------------------------
 
 class OrangeEffect(IngredientEffect):
-    """Orange chips have no ability of their own; they boost Red chips."""
     @property
     def phase(self) -> str:
         return "on_draw"
 
     def apply(self, player, state, **kwargs):
-        return {}  # Nothing to do; Red checks orange count itself
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +65,8 @@ class OrangeEffect(IngredientEffect):
 # ---------------------------------------------------------------------------
 
 class GreenEffectPage1(IngredientEffect):
-    """If sum of white chips in pot = exactly 7, advance last chip by green sum."""
+    """Evaluation B: if white_sum == 7, advance scoring marker by green chip COUNT."""
+
     @property
     def phase(self) -> str:
         return "evaluation_b"
@@ -74,59 +74,62 @@ class GreenEffectPage1(IngredientEffect):
     def apply(self, player, state, **kwargs):
         cauldron = player.cauldron
         if cauldron.white_sum == 7:
-            green_sum = cauldron.sum_color(ChipColor.GREEN)
-            if green_sum > 0 and cauldron.chips_in_pot:
+            green_count = cauldron.count_color(ChipColor.GREEN)
+            if green_count > 0 and cauldron._placed:
                 old_pos = cauldron.position
-                from quacks.scoring import MAX_CAULDRON_POSITION
-                new_pos = min(old_pos + green_sum, MAX_CAULDRON_POSITION)
-                # Advance the last placed chip's recorded position
-                if cauldron._placed:
-                    last = cauldron._placed[-1]
-                    from quacks.cauldron import PlacedChip
-                    cauldron._placed[-1] = PlacedChip(last.chip, new_pos, last.draw_order)
-                return {"green_advance": new_pos - old_pos, "new_pos": new_pos}
+                new_pos = min(old_pos + green_count, MAX_CAULDRON_POSITION)
+                last = cauldron._placed[-1]
+                cauldron._placed[-1] = PlacedChip(last.chip, new_pos, last.draw_order)
+                return {"green_advance": new_pos - old_pos}
         return {"green_advance": 0}
 
 
 class GreenEffectPage2(IngredientEffect):
-    """Gain 1 ruby for each green chip that is last or second-to-last drawn."""
+    """Evaluation B: gain 1 ruby per green chip in pot."""
+
     @property
     def phase(self) -> str:
-        return "on_draw"
+        return "evaluation_b"
 
     def apply(self, player, state, **kwargs):
-        chip = kwargs.get("chip")
-        cauldron = player.cauldron
-        last = cauldron.last_chip()
-        second_last = cauldron.second_to_last_chip()
-        rubies = 0
-        if last and last.chip.color == ChipColor.GREEN:
-            rubies += 1
-        if second_last and second_last.chip.color == ChipColor.GREEN:
-            rubies += 1
-        if rubies:
-            player.rubies += rubies
-        return {"rubies_earned": rubies}
+        green_count = player.cauldron.count_color(ChipColor.GREEN)
+        if green_count:
+            player.rubies += green_count
+        return {"rubies_earned": green_count, "green_advance": 0}
 
 
 class GreenEffectPage3(IngredientEffect):
-    """[VERIFY page 3 effect]"""
+    """Evaluation B: advance scoring marker by green chip count (no white condition). [VERIFY]"""
+
     @property
     def phase(self) -> str:
         return "evaluation_b"
 
     def apply(self, player, state, **kwargs):
-        return {}  # TODO: implement when verified
+        cauldron = player.cauldron
+        green_count = cauldron.count_color(ChipColor.GREEN)
+        if green_count > 0 and cauldron._placed:
+            old_pos = cauldron.position
+            new_pos = min(old_pos + green_count, MAX_CAULDRON_POSITION)
+            last = cauldron._placed[-1]
+            cauldron._placed[-1] = PlacedChip(last.chip, new_pos, last.draw_order)
+            return {"green_advance": new_pos - old_pos}
+        return {"green_advance": 0}
 
 
 class GreenEffectPage4(IngredientEffect):
-    """[VERIFY page 4 effect]"""
+    """Evaluation B: gain 2 rubies per green chip in pot. [VERIFY]"""
+
     @property
     def phase(self) -> str:
         return "evaluation_b"
 
     def apply(self, player, state, **kwargs):
-        return {}  # TODO: implement when verified
+        green_count = player.cauldron.count_color(ChipColor.GREEN)
+        rubies = green_count * 2
+        if rubies:
+            player.rubies += rubies
+        return {"rubies_earned": rubies, "green_advance": 0}
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +137,8 @@ class GreenEffectPage4(IngredientEffect):
 # ---------------------------------------------------------------------------
 
 class BlueEffectPage1(IngredientEffect):
-    """When drawn: peek at (chip.value) chips from bag; place one or return all."""
+    """On draw: peek at chip.value chips from bag; place one or return all."""
+
     @property
     def phase(self) -> str:
         return "on_draw"
@@ -144,45 +148,91 @@ class BlueEffectPage1(IngredientEffect):
         if chip is None:
             return {}
         peeked = player.bag.peek(chip.value)
-        # Strategy decides which to place (or None = return all)
         chosen = player.strategy.choose_blue_chip(player, state, peeked)
         if chosen is not None:
             player.bag.draw_specific(chosen)
             pos, rubies = player.cauldron.place(chosen)
             player.rubies += len(rubies)
+            if player._current_record:
+                player._current_record.rubies_earned += len(rubies)
             return {"blue_placed": str(chosen), "position": pos}
         return {"blue_placed": None}
 
 
 class BlueEffectPage2(IngredientEffect):
-    """Gain 1 ruby when blue chip lands on a ruby space."""
+    """On draw: peek at (chip.value + 1) chips from bag; place one or return all. [VERIFY]"""
+
     @property
     def phase(self) -> str:
         return "on_draw"
 
     def apply(self, player, state, **kwargs):
-        # Ruby already collected in cauldron.place() via _collect_rubies
-        return {}
+        chip = kwargs.get("chip")
+        if chip is None:
+            return {}
+        peeked = player.bag.peek(chip.value + 1)
+        chosen = player.strategy.choose_blue_chip(player, state, peeked)
+        if chosen is not None:
+            player.bag.draw_specific(chosen)
+            pos, rubies = player.cauldron.place(chosen)
+            player.rubies += len(rubies)
+            if player._current_record:
+                player._current_record.rubies_earned += len(rubies)
+            return {"blue_placed": str(chosen), "position": pos}
+        return {"blue_placed": None}
 
 
 class BlueEffectPage3(IngredientEffect):
-    """[VERIFY page 3 effect]"""
+    """On draw: peek at chip.value chips; must place one if any non-white available. [VERIFY]"""
+
     @property
     def phase(self) -> str:
         return "on_draw"
 
     def apply(self, player, state, **kwargs):
-        return {}
+        chip = kwargs.get("chip")
+        if chip is None:
+            return {}
+        peeked = player.bag.peek(chip.value)
+        if not peeked:
+            return {"blue_placed": None}
+        chosen = player.strategy.choose_blue_chip(player, state, peeked)
+        if chosen is None:
+            # Page 3: forced placement of best non-white chip if one exists
+            non_white = [c for c in peeked if c.color != ChipColor.WHITE]
+            if non_white:
+                chosen = max(non_white, key=lambda c: c.value)
+        if chosen is not None:
+            player.bag.draw_specific(chosen)
+            pos, rubies = player.cauldron.place(chosen)
+            player.rubies += len(rubies)
+            if player._current_record:
+                player._current_record.rubies_earned += len(rubies)
+            return {"blue_placed": str(chosen), "position": pos}
+        return {"blue_placed": None}
 
 
 class BlueEffectPage4(IngredientEffect):
-    """[VERIFY page 4 effect]"""
+    """On draw: peek at (chip.value + 2) chips from bag; place one or return all. [VERIFY]"""
+
     @property
     def phase(self) -> str:
         return "on_draw"
 
     def apply(self, player, state, **kwargs):
-        return {}
+        chip = kwargs.get("chip")
+        if chip is None:
+            return {}
+        peeked = player.bag.peek(chip.value + 2)
+        chosen = player.strategy.choose_blue_chip(player, state, peeked)
+        if chosen is not None:
+            player.bag.draw_specific(chosen)
+            pos, rubies = player.cauldron.place(chosen)
+            player.rubies += len(rubies)
+            if player._current_record:
+                player._current_record.rubies_earned += len(rubies)
+            return {"blue_placed": str(chosen), "position": pos}
+        return {"blue_placed": None}
 
 
 # ---------------------------------------------------------------------------
@@ -190,33 +240,25 @@ class BlueEffectPage4(IngredientEffect):
 # ---------------------------------------------------------------------------
 
 class RedEffectPage1(IngredientEffect):
-    """When drawn: advance extra spaces based on orange chips in pot."""
+    """On draw: advance extra spaces equal to orange chip count in pot."""
+
     @property
     def phase(self) -> str:
         return "on_draw"
 
     def apply(self, player, state, **kwargs):
-        orange_count = player.cauldron.count_color(ChipColor.ORANGE)
-        if orange_count == 0:
-            extra = 0
-        elif orange_count <= 2:
-            extra = 1
-        else:
-            extra = 2
-        if extra > 0:
-            cauldron = player.cauldron
-            if cauldron._placed:
-                last = cauldron._placed[-1]
-                from quacks.scoring import MAX_CAULDRON_POSITION
-                from quacks.cauldron import PlacedChip
-                new_pos = min(last.position + extra, MAX_CAULDRON_POSITION)
-                cauldron._placed[-1] = PlacedChip(last.chip, new_pos, last.draw_order)
-                return {"red_extra": extra, "new_pos": new_pos}
+        extra = player.cauldron.count_color(ChipColor.ORANGE)
+        if extra > 0 and player.cauldron._placed:
+            last = player.cauldron._placed[-1]
+            new_pos = min(last.position + extra, MAX_CAULDRON_POSITION)
+            player.cauldron._placed[-1] = PlacedChip(last.chip, new_pos, last.draw_order)
+            return {"red_extra": extra, "new_pos": new_pos}
         return {"red_extra": 0}
 
 
 class RedEffectPage2(IngredientEffect):
-    """If red in pot, all White 1-chips in pot each move +1 space. [VERIFY]"""
+    """On draw: each White-1 chip already in pot moves +1 space. [VERIFY]"""
+
     @property
     def phase(self) -> str:
         return "on_draw"
@@ -225,56 +267,80 @@ class RedEffectPage2(IngredientEffect):
         cauldron = player.cauldron
         red_count = cauldron.count_color(ChipColor.RED)
         if red_count >= 1:
-            from quacks.scoring import MAX_CAULDRON_POSITION
-            from quacks.cauldron import PlacedChip
             moved = 0
             for i, pc in enumerate(cauldron._placed):
                 if pc.chip.color == ChipColor.WHITE and pc.chip.value == 1:
                     new_pos = min(pc.position + 1, MAX_CAULDRON_POSITION)
                     cauldron._placed[i] = PlacedChip(pc.chip, new_pos, pc.draw_order)
                     moved += 1
-            return {"whites_moved": moved}
-        return {"whites_moved": 0}
+            return {"red_extra": moved, "whites_moved": moved}
+        return {"red_extra": 0, "whites_moved": 0}
 
 
 class RedEffectPage3(IngredientEffect):
-    """[VERIFY page 3 effect]"""
-    @property
-    def phase(self) -> str:
-        return "on_draw"
+    """On draw: advance extra spaces equal to red chips already in pot (before this one). [VERIFY]"""
 
-    def apply(self, player, state, **kwargs):
-        return {}
-
-
-class RedEffectPage4(IngredientEffect):
-    """[VERIFY page 4 effect]"""
-    @property
-    def phase(self) -> str:
-        return "on_draw"
-
-    def apply(self, player, state, **kwargs):
-        return {}
-
-
-# ---------------------------------------------------------------------------
-# YELLOW — Mandrake Root
-# ---------------------------------------------------------------------------
-
-class YellowEffectPage1(IngredientEffect):
-    """If drawn after a white chip, may return that white chip to bag."""
     @property
     def phase(self) -> str:
         return "on_draw"
 
     def apply(self, player, state, **kwargs):
         cauldron = player.cauldron
-        # The yellow was just placed; check second-to-last chip
+        # Red chips in pot includes the current one; subtract 1 for "already in pot"
+        extra = max(0, cauldron.count_color(ChipColor.RED) - 1)
+        if extra > 0 and cauldron._placed:
+            last = cauldron._placed[-1]
+            new_pos = min(last.position + extra, MAX_CAULDRON_POSITION)
+            cauldron._placed[-1] = PlacedChip(last.chip, new_pos, last.draw_order)
+            return {"red_extra": extra, "new_pos": new_pos}
+        return {"red_extra": 0}
+
+
+class RedEffectPage4(IngredientEffect):
+    """On draw: advance extra by orange count + red chips already in pot. [VERIFY]"""
+
+    @property
+    def phase(self) -> str:
+        return "on_draw"
+
+    def apply(self, player, state, **kwargs):
+        cauldron = player.cauldron
+        orange_count = cauldron.count_color(ChipColor.ORANGE)
+        red_already = max(0, cauldron.count_color(ChipColor.RED) - 1)
+        extra = orange_count + red_already
+        if extra > 0 and cauldron._placed:
+            last = cauldron._placed[-1]
+            new_pos = min(last.position + extra, MAX_CAULDRON_POSITION)
+            cauldron._placed[-1] = PlacedChip(last.chip, new_pos, last.draw_order)
+            return {"red_extra": extra, "new_pos": new_pos}
+        return {"red_extra": 0}
+
+
+# ---------------------------------------------------------------------------
+# YELLOW — Mandrake Root
+# ---------------------------------------------------------------------------
+
+def _remove_chip_from_cauldron(cauldron, chip) -> bool:
+    """Remove the first matching chip from cauldron._placed. Returns True if removed."""
+    for i, pc in enumerate(cauldron._placed):
+        if pc.chip == chip:
+            cauldron._placed.pop(i)
+            return True
+    return False
+
+
+class YellowEffectPage1(IngredientEffect):
+    """On draw: if drawn after a white chip, strategy may return that white to bag."""
+
+    @property
+    def phase(self) -> str:
+        return "on_draw"
+
+    def apply(self, player, state, **kwargs):
+        cauldron = player.cauldron
         second_last = cauldron.second_to_last_chip()
         if second_last and second_last.chip.color == ChipColor.WHITE:
-            # Strategy decides whether to exercise the power
             if player.strategy.use_yellow_power(player, state, second_last.chip):
-                # Remove the white chip from cauldron and return to bag
                 white_chip = second_last.chip
                 cauldron._placed.remove(second_last)
                 cauldron._white_sum -= white_chip.value
@@ -286,46 +352,93 @@ class YellowEffectPage1(IngredientEffect):
 
 
 class YellowEffectPage2(IngredientEffect):
-    """[VERIFY page 2 effect]"""
+    """On draw: strategy may return any one white chip from the pot to the bag. [VERIFY]"""
+
     @property
     def phase(self) -> str:
         return "on_draw"
 
     def apply(self, player, state, **kwargs):
-        return {}
+        cauldron = player.cauldron
+        whites = [pc.chip for pc in cauldron._placed if pc.chip.color == ChipColor.WHITE]
+        if not whites:
+            return {"yellow_returned_white": None}
+        chosen = player.strategy.choose_white_to_return(player, state, whites)
+        if chosen is None:
+            return {"yellow_returned_white": None}
+        if _remove_chip_from_cauldron(cauldron, chosen):
+            cauldron._white_sum -= chosen.value
+            if cauldron._white_sum <= 7:
+                cauldron._exploded = False
+            player.bag.return_chip(chosen)
+            return {"yellow_returned_white": str(chosen)}
+        return {"yellow_returned_white": None}
 
 
 class YellowEffectPage3(IngredientEffect):
-    """[VERIFY page 3 effect]"""
+    """On draw: strategy may return any one chip (any color) from the pot to the bag. [VERIFY]"""
+
     @property
     def phase(self) -> str:
         return "on_draw"
 
     def apply(self, player, state, **kwargs):
-        return {}
+        cauldron = player.cauldron
+        chips_in_pot = [pc.chip for pc in cauldron._placed]
+        if not chips_in_pot:
+            return {"yellow_returned_chip": None}
+        chosen = player.strategy.choose_chip_to_return(player, state, chips_in_pot)
+        if chosen is None:
+            return {"yellow_returned_chip": None}
+        if _remove_chip_from_cauldron(cauldron, chosen):
+            if chosen.color == ChipColor.WHITE:
+                cauldron._white_sum -= chosen.value
+                if cauldron._white_sum <= 7:
+                    cauldron._exploded = False
+            player.bag.return_chip(chosen)
+            return {"yellow_returned_chip": str(chosen)}
+        return {"yellow_returned_chip": None}
 
 
 class YellowEffectPage4(IngredientEffect):
-    """[VERIFY page 4 effect]"""
+    """On draw: strategy may return up to 2 chips (any color) from pot to bag. [VERIFY]"""
+
     @property
     def phase(self) -> str:
         return "on_draw"
 
     def apply(self, player, state, **kwargs):
-        return {}
+        cauldron = player.cauldron
+        chips_in_pot = [pc.chip for pc in cauldron._placed]
+        if not chips_in_pot:
+            return {"yellow_returned_chips": []}
+        chosen_list = player.strategy.choose_chips_to_return(
+            player, state, chips_in_pot, max_n=2
+        )
+        returned = []
+        for chosen in chosen_list:
+            if _remove_chip_from_cauldron(cauldron, chosen):
+                if chosen.color == ChipColor.WHITE:
+                    cauldron._white_sum -= chosen.value
+                    if cauldron._white_sum <= 7:
+                        cauldron._exploded = False
+                player.bag.return_chip(chosen)
+                returned.append(chosen)
+        return {"yellow_returned_chips": [str(c) for c in returned]}
 
 
 # ---------------------------------------------------------------------------
-# PURPLE — Raven's Feather
+# PURPLE — Raven's Feather  (all pages use the same tiered upgrade logic)
 # ---------------------------------------------------------------------------
 
 class PurpleEffect(IngredientEffect):
     """During buying phase: upgrade chips based on purple count in pot.
 
-    1 purple: may trade 1→2 chip (same color)
-    2 purple: may trade 2→4 chip (same color)
-    3+ purple: may trade 1→4 chip (same color)
+    1 purple: trade 1→2 chip (same color)
+    2 purple: trade 2→4 chip (same color)
+    3+ purple: trade 1→4 chip (same color)
     """
+
     @property
     def phase(self) -> str:
         return "buying"
@@ -354,10 +467,8 @@ class PurpleEffect(IngredientEffect):
 # ---------------------------------------------------------------------------
 
 class BlackEffectPage1(IngredientEffect):
-    """Evaluation B: count black chips; peek at that many chips from bag.
-    May return any of them (keeps them drawn for next round's awareness).
-    [VERIFY exact mechanic]
-    """
+    """Evaluation B: peek at black_count chips from bag top (information only)."""
+
     @property
     def phase(self) -> str:
         return "evaluation_b"
@@ -367,18 +478,59 @@ class BlackEffectPage1(IngredientEffect):
         if black_count == 0:
             return {}
         peeked = player.bag.peek(black_count)
-        # Strategy may choose chips to 'lock in' knowledge of; no actual move
         return {"black_peeked": [str(c) for c in peeked]}
 
 
 class BlackEffectPage2(IngredientEffect):
-    """[VERIFY page 2 effect]"""
+    """Evaluation B: peek at (black_count + 1) chips from bag top. [VERIFY]"""
+
     @property
     def phase(self) -> str:
         return "evaluation_b"
 
     def apply(self, player, state, **kwargs):
-        return {}
+        black_count = player.cauldron.count_color(ChipColor.BLACK)
+        if black_count == 0:
+            return {}
+        peeked = player.bag.peek(black_count + 1)
+        return {"black_peeked": [str(c) for c in peeked]}
+
+
+class BlackEffectPage3(IngredientEffect):
+    """Evaluation B: look at all chips in the bag (full information). [VERIFY]"""
+
+    @property
+    def phase(self) -> str:
+        return "evaluation_b"
+
+    def apply(self, player, state, **kwargs):
+        black_count = player.cauldron.count_color(ChipColor.BLACK)
+        if black_count == 0:
+            return {}
+        all_chips = player.bag.all_chips()
+        return {"black_peeked": [str(c) for c in all_chips]}
+
+
+class BlackEffectPage4(IngredientEffect):
+    """Evaluation B: peek at (black_count + 1) chips; strategy may permanently remove one. [VERIFY]"""
+
+    @property
+    def phase(self) -> str:
+        return "evaluation_b"
+
+    def apply(self, player, state, **kwargs):
+        black_count = player.cauldron.count_color(ChipColor.BLACK)
+        if black_count == 0:
+            return {}
+        peeked = player.bag.peek(black_count + 1)
+        chosen = player.strategy.choose_chip_to_remove(player, state, peeked)
+        if chosen is not None:
+            player.bag.draw_specific(chosen)  # removed from bag permanently this game
+            return {
+                "black_peeked": [str(c) for c in peeked],
+                "black_removed": str(chosen),
+            }
+        return {"black_peeked": [str(c) for c in peeked]}
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +562,8 @@ EFFECT_REGISTRY: dict[tuple[ChipColor, int], IngredientEffect] = {
     (ChipColor.PURPLE, 4): PurpleEffect(),
     (ChipColor.BLACK,  1): BlackEffectPage1(),
     (ChipColor.BLACK,  2): BlackEffectPage2(),
+    (ChipColor.BLACK,  3): BlackEffectPage3(),
+    (ChipColor.BLACK,  4): BlackEffectPage4(),
 }
 
 
