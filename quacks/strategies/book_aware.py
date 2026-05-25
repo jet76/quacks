@@ -86,8 +86,8 @@ class BookAwareStrategy(PlayerStrategy):
         White-sum threshold when no ingredient bonuses apply (same role as
         ThresholdStrategy's ``t``).
     max_threshold : int
-        Hard cap on the adjusted threshold.  6 is a sensible default: at
-        white_sum 6, the budget is 1, so only a White(1) is "safe".
+        Hard cap on the adjusted threshold.  7 allows the strategy to push
+        aggressively when high-value ingredient chips remain in the bag.
     max_chips_per_color : int
         Maximum chips of one color counted toward the bonus (prevents a
         huge bag full of one ingredient from inflating the threshold wildly).
@@ -97,8 +97,8 @@ class BookAwareStrategy(PlayerStrategy):
 
     def __init__(
         self,
-        base_threshold: int = 4,
-        max_threshold: int = 6,
+        base_threshold: int = 5,
+        max_threshold: int = 7,
         max_chips_per_color: int = 3,
         coin_rate: float = 0.25,
     ) -> None:
