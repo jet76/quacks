@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from quacks.enums import ChipColor
 from quacks.scoring import cauldron_reward, MAX_CAULDRON_POSITION
 from quacks.strategies.base import PlayerStrategy
+from quacks.strategies.buying import greedy_value_buy
 
 if TYPE_CHECKING:
     from quacks.chips import Chip
@@ -164,31 +165,4 @@ class MonteCarloStrategy(PlayerStrategy):
     def choose_purchases(
         self, player: "Player", state: "GameState", coins: int
     ) -> list["Chip"]:
-        purchases = []
-        remaining = coins
-        available = state.market.available_chips(state.round_number)
-
-        priority = [
-            ChipColor.GREEN,
-            ChipColor.YELLOW,
-            ChipColor.BLUE,
-            ChipColor.RED,
-            ChipColor.PURPLE,
-            ChipColor.BLACK,
-            ChipColor.ORANGE,
-        ]
-        for color in priority:
-            if remaining <= 0:
-                break
-            color_chips = sorted(
-                [l for l in available if l.chip.color == color and l.stock > 0],
-                key=lambda l: l.chip.value,
-                reverse=True,
-            )
-            for listing in color_chips:
-                if listing.cost <= remaining:
-                    purchases.append(listing.chip)
-                    remaining -= listing.cost
-                    break
-
-        return purchases
+        return greedy_value_buy(player, state, coins, coin_rate=self.coin_rate)

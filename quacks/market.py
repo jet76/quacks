@@ -51,9 +51,19 @@ class Market:
     Players can choose which page (1–4) of each book to use, changing
     the chip's in-game effect. The market sells the same chips regardless
     of book page — book page only affects the chip's pulling-phase effect.
+
+    Expansions can inject extra chip costs, stock quantities, and
+    availability rounds via the extra_* parameters.
     """
 
-    def __init__(self, n_players: int = 4, book_pages: dict[ChipColor, int] | None = None) -> None:
+    def __init__(
+        self,
+        n_players: int = 4,
+        book_pages: dict[ChipColor, int] | None = None,
+        extra_costs: dict[tuple[ChipColor, int], int] | None = None,
+        extra_stock: dict[tuple[ChipColor, int], int] | None = None,
+        extra_availability: dict[ChipColor, int] | None = None,
+    ) -> None:
         self.n_players = n_players
         # Active book page per ingredient color (default page 1)
         self.book_pages: dict[ChipColor, int] = {
@@ -61,16 +71,32 @@ class Market:
             for color in ChipColor
             if color != ChipColor.WHITE
         }
-        self._stock: dict[tuple[ChipColor, int], int] = self._initialize_stock()
+        # Merge expansion costs into the cost catalogue
+        self._costs: dict[tuple[ChipColor, int], int] = dict(CHIP_COSTS)
+        if extra_costs:
+            self._costs.update(extra_costs)
+        # Merge expansion availability
+        self._availability: dict[ChipColor, int] = dict(INGREDIENT_AVAILABILITY)
+        if extra_availability:
+            self._availability.update(extra_availability)
+        self._stock: dict[tuple[ChipColor, int], int] = self._initialize_stock(extra_stock)
 
-    def _initialize_stock(self) -> dict[tuple[ChipColor, int], int]:
+    def _initialize_stock(
+        self,
+        extra_stock: dict[tuple[ChipColor, int], int] | None = None,
+    ) -> dict[tuple[ChipColor, int], int]:
         base = dict(_BASE_STOCK_4_PLAYER)
         # Scale down for fewer players [VERIFY exact scaling]
         if self.n_players == 2:
-            return {k: max(2, v - 2) for k, v in base.items()}
-        if self.n_players == 3:
-            return {k: max(2, v - 1) for k, v in base.items()}
-        return base
+            stock = {k: max(2, v - 2) for k, v in base.items()}
+        elif self.n_players == 3:
+            stock = {k: max(2, v - 1) for k, v in base.items()}
+        else:
+            stock = base
+        if extra_stock:
+            for k, v in extra_stock.items():
+                stock[k] = stock.get(k, 0) + v
+        return stock
 
     # ------------------------------------------------------------------
     # Availability
@@ -79,7 +105,7 @@ class Market:
     def available_colors(self, round_number: int) -> list[ChipColor]:
         """Colors available for purchase in the given round."""
         return [
-            color for color, avail_round in INGREDIENT_AVAILABILITY.items()
+            color for color, avail_round in self._availability.items()
             if round_number >= avail_round
         ]
 
@@ -89,15 +115,15 @@ class Market:
         for color in self.available_colors(round_number):
             for value in (1, 2, 4):
                 key = (color, value)
-                if key not in CHIP_COSTS:
+                if key not in self._costs:
                     continue
                 stock = self._stock.get(key, 0)
-                cost = CHIP_COSTS[key]
+                cost = self._costs[key]
                 listings.append(MarketListing(
                     chip=Chip(color, value),
                     cost=cost,
                     stock=stock,
-                    available_from_round=INGREDIENT_AVAILABILITY[color],
+                    available_from_round=self._availability[color],
                 ))
         return listings
 
@@ -105,7 +131,7 @@ class Market:
         return self._stock.get((chip.color, chip.value), 0) > 0
 
     def cost(self, chip: Chip) -> Optional[int]:
-        return CHIP_COSTS.get((chip.color, chip.value))
+        return self._costs.get((chip.color, chip.value))
 
     # ------------------------------------------------------------------
     # Transactions
@@ -114,7 +140,7 @@ class Market:
     def buy(self, chip: Chip, coins: int) -> tuple[bool, str]:
         """Attempt to purchase a chip. Returns (success, reason_if_failed)."""
         key = (chip.color, chip.value)
-        price = CHIP_COSTS.get(key)
+        price = self._costs.get(key)
         if price is None:
             return False, f"{chip} is not purchasable"
         if price > coins:

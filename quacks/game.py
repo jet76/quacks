@@ -19,6 +19,7 @@ from quacks.market import Market
 from quacks.player import Player
 from quacks.scoring import cauldron_reward, SCORING_TRACK_MAX, rubies_to_vp
 from quacks.ingredients.registry import get_effect
+from quacks.expansions import Expansion
 
 
 TOTAL_ROUNDS = 9
@@ -106,20 +107,54 @@ class Game:
         book_pages: dict[ChipColor, int] | None = None,
         rng: random.Random | None = None,
         event_handlers: list[EventHandler] | None = None,
+        expansions: list[Expansion] | None = None,
     ) -> None:
         if not 2 <= len(players) <= 4:
             raise ValueError(f"Need 2–4 players, got {len(players)}")
         self.players = players
         self.rng = rng or random.Random()
         self._handlers: list[EventHandler] = event_handlers or []
+        self.expansions: list[Expansion] = expansions or []
 
         # Thread the game RNG into each player's bag for full determinism
         for player in self.players:
             player.bag._rng = self.rng
 
-        self.market = Market(n_players=len(players), book_pages=book_pages)
-        # 24-card deck; top 9 are drawn for this game
-        self.fortune_deck: list[FortuneCard] = make_game_deck(self.rng)
+        # Collect expansion data before initialising market and deck
+        extra_fortune_cards: list[FortuneCard] = []
+        extra_costs: dict[tuple, int] = {}
+        extra_stock: dict[tuple, int] = {}
+        extra_availability: dict[ChipColor, int] = {}
+
+        for exp in self.expansions:
+            extra_fortune_cards.extend(exp.extra_fortune_cards)
+            for chip, cost in exp.new_chips:
+                key = (chip.color, chip.value)
+                extra_costs[key] = cost
+                # Default 4 copies per expansion chip (shared pool)
+                extra_stock[key] = extra_stock.get(key, 0) + 4
+                # Expansion colors are available from round 1 by default
+                extra_availability.setdefault(chip.color, 1)
+            for chip, extra_count in exp.extra_market_stock.items():
+                key = (chip.color, chip.value)
+                extra_stock[key] = extra_stock.get(key, 0) + extra_count
+
+        self.market = Market(
+            n_players=len(players),
+            book_pages=book_pages,
+            extra_costs=extra_costs or None,
+            extra_stock=extra_stock or None,
+            extra_availability=extra_availability or None,
+        )
+        self.fortune_deck: list[FortuneCard] = make_game_deck(
+            self.rng, extra_cards=extra_fortune_cards or None
+        )
+
+        # Apply starting bag extras from expansions
+        for exp in self.expansions:
+            for player in self.players:
+                for chip in exp.starting_bag_extras:
+                    player.bag.add(chip)
         self.round_number: int = 0
         self.phase: GamePhase = GamePhase.SETUP
         self._current_card: Optional[FortuneCard] = None

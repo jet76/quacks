@@ -178,12 +178,17 @@ assert len(FORTUNE_CARDS) == 24, f"Expected 24 fortune cards, got {len(FORTUNE_C
 _CARD_BY_ID: dict[int, FortuneCard] = {c.card_id: c for c in FORTUNE_CARDS}
 
 
-def make_game_deck(rng: random.Random | None = None) -> list[FortuneCard]:
-    """Shuffle the 24-card deck and return the top 9 for use this game.
+def make_game_deck(
+    rng: random.Random | None = None,
+    extra_cards: list[FortuneCard] | None = None,
+) -> list[FortuneCard]:
+    """Shuffle the fortune deck and return the top 9 for use this game.
 
-    In the real game, only 9 of the 24 cards appear each game (drawn in
-    sequence). The other 15 are set aside.
+    Expansions inject extra cards into the pool before shuffling (the deck
+    grows beyond 24 but 9 cards are still drawn). The other cards are set aside.
     """
     deck = list(FORTUNE_CARDS)
+    if extra_cards:
+        deck.extend(extra_cards)
     (rng or random).shuffle(deck)
     return deck[:9]

@@ -12,6 +12,10 @@ class ChipColor(Enum):
     YELLOW = "yellow"     # Mandrake Root — returns white chip
     PURPLE = "purple"     # Raven's Feather — chip upgrades
     BLACK = "black"       # Crow's Eye — peek at bag
+    # ---- Expansion colors (pre-registered; not active in base game) ----
+    CYAN = "cyan"         # Witch's Tooth (The Herb Witches expansion)
+    GRAY = "gray"         # Bone (The Herb Witches expansion)
+    PINK = "pink"         # Rose (The Alchemists expansion)
 
 
 class GamePhase(Enum):
