@@ -76,20 +76,48 @@ def _show_pot(player: "Player") -> None:
 
 
 def _show_bag(player: "Player") -> None:
-    from collections import Counter
     chips = player.bag.all_chips()
     if not chips:
         print("  Bag      : (empty)")
         return
+
+    n = len(chips)
     budget = player.cauldron.white_budget_remaining()
-    cts = Counter(str(c) for c in chips)
-    summary = ", ".join(f"{c}×{n}" if n > 1 else c for c, n in sorted(cts.items()))
-    danger = sum(
-        1 for c in chips
-        if c.color == ChipColor.WHITE and c.value > budget
+
+    # Build per-chip-type groups preserving insertion order via dict
+    groups: dict[str, list] = {}
+    for c in chips:
+        key = str(c)
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(c)
+
+    parts = []
+    for key in sorted(groups):
+        grp = groups[key]
+        cnt = len(grp)
+        pct = round(100 * cnt / n)
+        is_danger = any(
+            c.color == ChipColor.WHITE and c.value > budget for c in grp
+        )
+        mark = "!" if is_danger else ""
+        parts.append(f"{key}×{cnt} {pct}%{mark}" if cnt > 1 else f"{key} {pct}%{mark}")
+
+    print(f"  Bag ({n:2d})  : {', '.join(parts)}")
+
+    dangerous = sum(
+        1 for c in chips if c.color == ChipColor.WHITE and c.value > budget
     )
-    risk = f"  [{danger}/{len(chips)} dangerous]" if danger else ""
-    print(f"  Bag ({len(chips):2d})  : {summary}{risk}")
+    if dangerous:
+        boom_pct = round(100 * dangerous / n)
+        safe_pct = 100 - boom_pct
+        print(f"  Draw risk : {boom_pct}% BOOM  ·  {safe_pct}% safe"
+              f"  ({dangerous}/{n} chips exceed budget)")
+    else:
+        white_n = sum(1 for c in chips if c.color == ChipColor.WHITE)
+        white_part = f", {round(100 * white_n / n)}% white" if white_n else ""
+        print(f"  Draw risk : 0% explosion"
+              f"  (budget {budget} left{white_part})")
 
 
 # ---------------------------------------------------------------------------
