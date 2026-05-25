@@ -164,8 +164,8 @@ class TestChoosePurchases:
     def test_cannot_afford_chip(self):
         p = human_player()
         state = make_state(p)
-        # Only 1 coin — nothing affordable
-        with patch("builtins.input", return_value="1"):
+        # Only 1 coin — nothing affordable; blank input exits the loop
+        with patch("builtins.input", side_effect=["1", ""]):
             result = p.strategy.choose_purchases(p, state, coins=1)
         assert result == []
 
