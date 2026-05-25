@@ -22,6 +22,7 @@ from quacks.enums import ChipColor
 from quacks.strategies.threshold import ThresholdStrategy
 from quacks.strategies.ev_optimal import EVOptimalStrategy
 from quacks.strategies.monte_carlo import MonteCarloStrategy
+from quacks.strategies.book_aware import BookAwareStrategy
 from quacks.strategies.human import _show_bag, _show_pot, _rule
 
 
@@ -29,6 +30,7 @@ _STRATEGIES: dict[str, object] = {
     "threshold": lambda: ThresholdStrategy(4),
     "ev": EVOptimalStrategy,
     "mc": lambda: MonteCarloStrategy(200),
+    "book": lambda: BookAwareStrategy(),
 }
 
 _RULE_WIDTH = 58
