@@ -155,11 +155,12 @@ class Game:
             for player in self.players:
                 for chip in exp.starting_bag_extras:
                     player.bag.add(chip)
+
         self.round_number: int = 0
         self.phase: GamePhase = GamePhase.SETUP
         self._current_card: Optional[FortuneCard] = None
 
-        # Round-long modifiers (reset each round)
+        # Round-long modifiers must exist before _game_state() is called below
         self._rat_multiplier: int = 1
         self._vp_multiplier: int = 1
         self._stop_bonus_vp: int = 0
@@ -169,6 +170,32 @@ class Game:
         self._strong_ingredient_bonus: int = 0
         self._extra_ruby_on_landing: bool = False
         self._bonus_coins: int = 0
+
+        # Apply book pages: global override → expansion overrides → strategy choice.
+        # All three layers are merged in that priority order.
+        global_pages: dict[ChipColor, int] = book_pages or {}
+        expansion_overrides: dict[ChipColor, int] = {}
+        for exp in self.expansions:
+            expansion_overrides.update(exp.book_page_overrides)
+
+        setup_state = self._game_state()
+        for player in self.players:
+            # 1. Global pages (same for every player)
+            for color, page in global_pages.items():
+                if color != ChipColor.WHITE and 1 <= page <= 4:
+                    player.book_pages[color] = page
+            # 2. Expansion overrides
+            for color, page in expansion_overrides.items():
+                if color != ChipColor.WHITE and 1 <= page <= 4:
+                    player.book_pages[color] = page
+            # 3. Per-player strategy choice (can override both layers above)
+            strategy_pages = player.strategy.choose_book_pages(player, setup_state)
+            for color, page in strategy_pages.items():
+                if color != ChipColor.WHITE and 1 <= page <= 4:
+                    player.book_pages[color] = page
+
+        self._emit(_event("book_pages_set",
+                          pages={p.name: dict(p.book_pages) for p in self.players}))
 
     # ------------------------------------------------------------------
     # Event system
