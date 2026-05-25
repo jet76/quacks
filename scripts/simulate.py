@@ -181,7 +181,35 @@ def main():
         default=None,
         help="RNG seed for a reproducible run",
     )
+    ap.add_argument(
+        "--pages",
+        nargs="*",
+        metavar="COLOR=PAGE",
+        default=[],
+        help=(
+            "Book pages per ingredient color, e.g. --pages green=2 blue=3 red=2  "
+            "(valid pages: 1–4; colors: green yellow blue red purple black orange)"
+        ),
+    )
     args = ap.parse_args()
+
+    # Parse --pages COLOR=N tokens into a ChipColor → int dict
+    book_pages: dict[ChipColor, int] = {}
+    for token in (args.pages or []):
+        try:
+            color_str, page_str = token.split("=", 1)
+            color = ChipColor(color_str.lower())
+            page = int(page_str)
+            if color == ChipColor.WHITE:
+                ap.error("white book pages cannot be changed")
+            if not (1 <= page <= 4):
+                ap.error(f"page must be 1–4, got {page!r}")
+            book_pages[color] = page
+        except ValueError:
+            ap.error(
+                f"invalid --pages entry {token!r}  "
+                f"(expected COLOR=PAGE, e.g. green=2)"
+            )
 
     rng = random.Random(args.seed)
     inner = _STRATEGIES[args.strategy]()
@@ -189,13 +217,20 @@ def main():
     # Ghost opponent keeps the 2-player minimum and activates rat stone/catchup
     ghost = Player("Ghost", ThresholdStrategy(4))
 
+    pages_display = (
+        "  ".join(f"{c.value}={p}" for c, p in sorted(book_pages.items(),
+                                                        key=lambda kv: kv[0].value))
+        or "all defaults (page 1)"
+    )
     print(f"\n  Strategy : {inner.name}")
+    print(f"  Pages    : {pages_display}")
     print(f"  Seed     : {args.seed if args.seed is not None else '(random)'}")
     print(f"  Rounds   : {TOTAL_ROUNDS}")
 
     game = Game(
         players=[player, ghost],
         rng=rng,
+        book_pages=book_pages or None,
         event_handlers=[_make_handler(player.name)],
     )
     game.run()
