@@ -15,6 +15,7 @@ from quacks.strategies.cautious import CautiousStrategy
 from quacks.strategies.aggressive import AggressiveStrategy
 from quacks.strategies.ev_optimal import EVOptimalStrategy
 from quacks.strategies.monte_carlo import MonteCarloStrategy
+from quacks.strategies.human import HumanStrategy
 
 __all__ = [
     "PlayerStrategy",
@@ -24,4 +25,5 @@ __all__ = [
     "AggressiveStrategy",
     "EVOptimalStrategy",
     "MonteCarloStrategy",
+    "HumanStrategy",
 ]
