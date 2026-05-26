@@ -2,10 +2,12 @@
 """Simulate a single player and print draw probabilities at every step.
 
 Usage:
-    python scripts/simulate.py                   # threshold strategy, random seed
-    python scripts/simulate.py --strategy ev     # EV-optimal strategy
-    python scripts/simulate.py --seed 42         # reproducible run
-    python scripts/simulate.py --strategy mc --seed 7
+    python scripts/simulate.py                        # threshold strategy, book set 1
+    python scripts/simulate.py --strategy ev          # EV-optimal strategy
+    python scripts/simulate.py --set 2                # use ingredient book set 2
+    python scripts/simulate.py --set random           # pick a random book set
+    python scripts/simulate.py --seed 42              # reproducible run
+    python scripts/simulate.py --strategy mc --seed 7 --set 3
 """
 
 from __future__ import annotations
@@ -241,34 +243,31 @@ def main():
         help="RNG seed for a reproducible run",
     )
     ap.add_argument(
-        "--pages",
-        nargs="*",
-        metavar="COLOR=PAGE",
-        default=[],
+        "--set",
+        dest="book_set",
+        metavar="1-4|random",
+        default=None,
         help=(
-            "Book pages per ingredient color, e.g. --pages green=2 blue=3 red=2  "
-            "(valid pages: 1–4; colors: green yellow blue red purple black orange)"
+            "Ingredient book set to use (1–4 or 'random').  "
+            "Sets green/blue/red/yellow/purple to the matching page.  "
+            "Omit to use Set 1 (all page 1, recommended for first play)."
         ),
     )
     args = ap.parse_args()
 
-    # Parse --pages COLOR=N tokens into a ChipColor → int dict
-    book_pages: dict[ChipColor, int] = {}
-    for token in (args.pages or []):
-        try:
-            color_str, page_str = token.split("=", 1)
-            color = ChipColor(color_str.lower())
-            page = int(page_str)
-            if color == ChipColor.WHITE:
-                ap.error("white book pages cannot be changed")
-            if not (1 <= page <= 4):
-                ap.error(f"page must be 1–4, got {page!r}")
-            book_pages[color] = page
-        except ValueError:
-            ap.error(
-                f"invalid --pages entry {token!r}  "
-                f"(expected COLOR=PAGE, e.g. green=2)"
-            )
+    # Validate --set
+    book_set: "int | str | None" = None
+    if args.book_set is not None:
+        if args.book_set == "random":
+            book_set = "random"
+        else:
+            try:
+                n = int(args.book_set)
+                if not 1 <= n <= 4:
+                    raise ValueError
+                book_set = n
+            except ValueError:
+                ap.error(f"--set must be 1, 2, 3, 4, or 'random' (got {args.book_set!r})")
 
     rng = random.Random(args.seed)
     inner = _STRATEGIES[args.strategy]()
@@ -276,20 +275,16 @@ def main():
     # Ghost opponent keeps the 2-player minimum and activates rat stone/catchup
     ghost = Player("Ghost", ThresholdStrategy(4))
 
-    pages_display = (
-        "  ".join(f"{c.value}={p}" for c, p in sorted(book_pages.items(),
-                                                        key=lambda kv: kv[0].value))
-        or "all defaults (page 1)"
-    )
+    set_display = str(book_set) if book_set is not None else "1 (default)"
     print(f"\n  Strategy : {inner.name}")
-    print(f"  Pages    : {pages_display}")
+    print(f"  Book set : {set_display}")
     print(f"  Seed     : {args.seed if args.seed is not None else '(random)'}")
     print(f"  Rounds   : {TOTAL_ROUNDS}")
 
     game = Game(
         players=[player, ghost],
         rng=rng,
-        book_pages=book_pages or None,
+        book_set=book_set,
         event_handlers=[_make_handler(player)],
     )
     game.run()

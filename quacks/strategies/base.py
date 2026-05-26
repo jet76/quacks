@@ -121,19 +121,6 @@ class PlayerStrategy(ABC):
         return max(options, key=lambda pair: pair[1].value)
 
     # ------------------------------------------------------------------
-    # Pre-game setup
-    # ------------------------------------------------------------------
-
-    def choose_book_pages(
-        self, player: "Player", state: "GameState"
-    ) -> dict["ChipColor", int]:
-        """Return the ingredient book page to use per color before the game starts.
-
-        Return a partial dict — only override colors you want to change from page 1.
-        Pages outside 1–4 are ignored. Default: all page 1 (no overrides).
-        """
-        return {}
-
     def choose_free_chip(
         self, player: "Player", state: "GameState", available: list["Chip"]
     ) -> Optional["Chip"]:

@@ -24,6 +24,50 @@ from quacks.expansions import Expansion
 
 TOTAL_ROUNDS = 9
 
+# Colors governed by the book set (Sets 1–4).  Orange is always page 1;
+# Black is determined by player count (see _black_page).
+_SET_COLORS = frozenset({
+    ChipColor.GREEN, ChipColor.BLUE, ChipColor.RED,
+    ChipColor.YELLOW, ChipColor.PURPLE,
+})
+
+
+def _black_page(n_players: int) -> int:
+    """Black book page depends on player count per official rules."""
+    return 1 if n_players == 2 else 2
+
+
+def _resolve_book_pages(
+    book_set: "int | str | None",
+    book_pages: "dict[ChipColor, int] | None",
+    n_players: int,
+    rng: random.Random,
+) -> dict[ChipColor, int]:
+    """Compute the single shared page mapping applied to every player.
+
+    Priority (highest wins): expansion overrides > book_pages > book_set > defaults.
+    Callers apply expansion overrides on top of the returned dict.
+    """
+    # Base defaults
+    pages: dict[ChipColor, int] = {c: 1 for c in ChipColor if c != ChipColor.WHITE}
+    pages[ChipColor.BLACK] = _black_page(n_players)
+
+    # Book set (applies to the 5 set-based colors)
+    if book_set is not None:
+        chosen: int = rng.randint(1, 4) if book_set == "random" else int(book_set)
+        if not 1 <= chosen <= 4:
+            raise ValueError(f"book_set must be 1–4 or 'random', got {book_set!r}")
+        for color in _SET_COLORS:
+            pages[color] = chosen
+
+    # Explicit per-color overrides
+    if book_pages:
+        for color, page in book_pages.items():
+            if color != ChipColor.WHITE and 1 <= page <= 4:
+                pages[color] = page
+
+    return pages
+
 
 # ---------------------------------------------------------------------------
 # Game state snapshot (passed to strategies so they can make informed decisions)
@@ -104,7 +148,8 @@ class Game:
     def __init__(
         self,
         players: list[Player],
-        book_pages: dict[ChipColor, int] | None = None,
+        book_set: "int | str | None" = None,
+        book_pages: "dict[ChipColor, int] | None" = None,
         rng: random.Random | None = None,
         event_handlers: list[EventHandler] | None = None,
         expansions: list[Expansion] | None = None,
@@ -171,31 +216,21 @@ class Game:
         self._extra_ruby_on_landing: bool = False
         self._bonus_coins: int = 0
 
-        # Apply book pages: global override → expansion overrides → strategy choice.
-        # All three layers are merged in that priority order.
-        global_pages: dict[ChipColor, int] = book_pages or {}
-        expansion_overrides: dict[ChipColor, int] = {}
+        # Apply book pages: one shared setup for all players.
+        # Priority: defaults < book_set < book_pages < expansion overrides.
+        shared_pages = _resolve_book_pages(book_set, book_pages,
+                                           len(self.players), self.rng)
         for exp in self.expansions:
-            expansion_overrides.update(exp.book_page_overrides)
+            for color, page in exp.book_page_overrides.items():
+                if color != ChipColor.WHITE and 1 <= page <= 4:
+                    shared_pages[color] = page
 
-        setup_state = self._game_state()
         for player in self.players:
-            # 1. Global pages (same for every player)
-            for color, page in global_pages.items():
-                if color != ChipColor.WHITE and 1 <= page <= 4:
-                    player.book_pages[color] = page
-            # 2. Expansion overrides
-            for color, page in expansion_overrides.items():
-                if color != ChipColor.WHITE and 1 <= page <= 4:
-                    player.book_pages[color] = page
-            # 3. Per-player strategy choice (can override both layers above)
-            strategy_pages = player.strategy.choose_book_pages(player, setup_state)
-            for color, page in strategy_pages.items():
-                if color != ChipColor.WHITE and 1 <= page <= 4:
-                    player.book_pages[color] = page
+            player.book_pages.update(shared_pages)
 
         self._emit(_event("book_pages_set",
-                          pages={p.name: dict(p.book_pages) for p in self.players}))
+                          book_set=book_set,
+                          pages=dict(shared_pages)))
 
     # ------------------------------------------------------------------
     # Event system

@@ -328,30 +328,6 @@ class TestIngredientPowers:
 
 
 # ---------------------------------------------------------------------------
-# choose_book_pages
-# ---------------------------------------------------------------------------
-
-class TestChooseBookPages:
-    def test_all_blank_returns_empty(self):
-        p = human_player()
-        state = make_state(p)
-        with patch("builtins.input", return_value=""):
-            pages = p.strategy.choose_book_pages(p, state)
-        # All defaults (page 1) → nothing in the dict
-        assert all(v == 1 for v in pages.values()) or pages == {}
-
-    def test_selects_nondefault_page(self):
-        p = human_player()
-        state = make_state(p)
-        colors = [c for c in ChipColor if c != ChipColor.WHITE]
-        # Answer 3 for the first color, blank for the rest
-        responses = ["3"] + [""] * (len(colors) - 1)
-        with patch("builtins.input", side_effect=responses):
-            pages = p.strategy.choose_book_pages(p, state)
-        assert pages.get(colors[0]) == 3
-
-
-# ---------------------------------------------------------------------------
 # Full game integration
 # ---------------------------------------------------------------------------
 

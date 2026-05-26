@@ -132,30 +132,6 @@ class HumanStrategy(PlayerStrategy):
         return "Human"
 
     # ------------------------------------------------------------------
-    # Pre-game
-    # ------------------------------------------------------------------
-
-    def choose_book_pages(
-        self, player: "Player", state: "GameState"
-    ) -> dict[ChipColor, int]:
-        print(f"\n{_rule()}")
-        print("  Ingredient Book Pages")
-        print(_rule())
-        print("  Choose page 1–4 for each ingredient (Enter = page 1).\n")
-
-        pages: dict[ChipColor, int] = {}
-        for color in ChipColor:
-            if color == ChipColor.WHITE:
-                continue
-            page = _ask_int(
-                f"    {color.value.capitalize():<10} [1-4, default 1]: ",
-                lo=1, hi=4, default=1,
-            )
-            if page != 1:
-                pages[color] = page
-        return pages
-
-    # ------------------------------------------------------------------
     # Pulling phase
     # ------------------------------------------------------------------
 
