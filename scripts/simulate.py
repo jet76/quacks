@@ -76,7 +76,8 @@ def _ability(label: str, detail: str) -> None:
     print(f"     ★ {label}: {detail}")
 
 
-def _make_handler(player_name: str):
+def _make_handler(player: "Player"):
+    player_name = player.name
     ctx = {"round": 0, "draws": 0}
 
     def handler(ev):
@@ -90,6 +91,13 @@ def _make_handler(player_name: str):
             print(f"\n{'═' * _RULE_WIDTH}")
             print(f"  Round {ev['round']} of {TOTAL_ROUNDS}")
             print(f"{'═' * _RULE_WIDTH}")
+            # Player state carried in from the previous round
+            droplet = player.cauldron.droplet_position
+            flask   = "full" if player.flask_full else "empty"
+            rubies  = player.rubies
+            vp      = player.scoring_position
+            print(f"  VP: {vp}   Droplet: {droplet}   Flask: {flask}"
+                  f"   Rubies: {rubies}")
 
         elif t == "fortune_card":
             print(f"  Fortune  : [{ev['name']}]  {ev['effect']}")
@@ -282,7 +290,7 @@ def main():
         players=[player, ghost],
         rng=rng,
         book_pages=book_pages or None,
-        event_handlers=[_make_handler(player.name)],
+        event_handlers=[_make_handler(player)],
     )
     game.run()
 
