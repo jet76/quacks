@@ -414,6 +414,7 @@ class TestBlackPages:
     def _player_with_bag_of(self, chips):
         p = Player("P", ThresholdStrategy())
         p.bag._chips = list(chips)
+        p.bag._rng = random.Random(1)  # fixed seed so peek is deterministic
         p.cauldron.start_round()
         place_chip(p, BLACK_1)  # 1 black chip in pot
         return p

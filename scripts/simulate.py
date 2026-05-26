@@ -2,7 +2,7 @@
 """Simulate a single player and print draw probabilities at every step.
 
 Usage:
-    python scripts/simulate.py                        # threshold strategy, book set 1
+    python scripts/simulate.py                        # threshold strategy, random book set
     python scripts/simulate.py --strategy ev          # EV-optimal strategy
     python scripts/simulate.py --set 2                # use ingredient book set 2
     python scripts/simulate.py --set random           # pick a random book set
@@ -275,7 +275,7 @@ def main():
     # Ghost opponent keeps the 2-player minimum and activates rat stone/catchup
     ghost = Player("Ghost", ThresholdStrategy(4))
 
-    set_display = str(book_set) if book_set is not None else "1 (default)"
+    set_display = str(book_set) if book_set is not None else "random (default)"
     print(f"\n  Strategy : {inner.name}")
     print(f"  Book set : {set_display}")
     print(f"  Seed     : {args.seed if args.seed is not None else '(random)'}")

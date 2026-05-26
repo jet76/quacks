@@ -148,7 +148,7 @@ class Game:
     def __init__(
         self,
         players: list[Player],
-        book_set: "int | str | None" = None,
+        book_set: "int | str | None" = "random",
         book_pages: "dict[ChipColor, int] | None" = None,
         rng: random.Random | None = None,
         event_handlers: list[EventHandler] | None = None,
